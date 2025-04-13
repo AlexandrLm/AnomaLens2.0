@@ -1,0 +1,50 @@
+<svg width="200" height="50" viewBox="0 0 200 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Новый градиент: от фиолетового к синему -->
+    <linearGradient id="new-logo-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#6B48FF" /> <!-- Фиолетовый -->
+      <stop offset="100%" stop-color="#3B82F6" /> <!-- Синий -->
+    </linearGradient>
+    <!-- Фильтр для свечения -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2" />
+      <feOffset dx="0" dy="0" result="offsetblur" />
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.5" />
+      </feComponentTransfer>
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Текст "AnomaLens" -->
+  <text x="10" y="35" font-family="'Montserrat', 'Arial', sans-serif" font-size="24" font-weight="700" fill="url(#new-logo-gradient)" filter="url(#glow)">
+    AnomaLens
+  </text>
+
+  <!-- Декоративные линии -->
+  <line x1="10" y1="42" x2="40" y2="42" stroke="url(#new-logo-gradient)" stroke-width="1" opacity="0.3" />
+  <line x1="90" y1="42" x2="120" y2="42" stroke="url(#new-logo-gradient)" stroke-width="1" opacity="0.3" />
+
+  <!-- Обновленный эффект линзы -->
+  <g transform="translate(160, 25)">
+    <circle cx="0" cy="0" r="10" stroke="url(#new-logo-gradient)" stroke-width="2" fill="none" filter="url(#glow)" />
+    <circle cx="0" cy="0" r="5" stroke="url(#new-logo-gradient)" stroke-width="1" fill="none" />
+    <circle cx="0" cy="0" r="2" fill="url(#new-logo-gradient)" />
+    <!-- Ручка линзы -->
+    <line x1="10" y1="0" x2="15" y2="5" stroke="url(#new-logo-gradient)" stroke-width="1.5" />
+  </g>
+
+  <!-- Версия -->
+  <text x="180" y="42" font-family="'Montserrat', 'Arial', sans-serif" font-size="8" font-weight="600" fill="url(#new-logo-gradient)">2.0</text>
+
+  <!-- Абстрактный элемент (технологичная сетка) -->
+  <g opacity="0.1">
+    <line x1="130" y1="10" x2="150" y2="10" stroke="url(#new-logo-gradient)" stroke-width="1" />
+    <line x1="130" y1="15" x2="150" y2="15" stroke="url(#new-logo-gradient)" stroke-width="1" />
+    <line x1="130" y1="10" x2="130" y2="15" stroke="url(#new-logo-gradient)" stroke-width="1" />
+    <line x1="150" y1="10" x2="150" y2="15" stroke="url(#new-logo-gradient)" stroke-width="1" />
+  </g>
+</svg>

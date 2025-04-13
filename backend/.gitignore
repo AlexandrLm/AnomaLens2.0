@@ -1,0 +1,35 @@
+# Virtual environment
+.venv/
+virtualenv/
+venv/
+env/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# SQLite databases
+*.db
+*.db-journal
+
+# Environment variables
+.env
+
+# IDE / Editor specific
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# ML Models
+backend/ml_service/saved_models/ 
