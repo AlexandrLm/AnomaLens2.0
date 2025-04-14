@@ -11,30 +11,9 @@ from operator import attrgetter
 from ..database import SessionLocal, get_db # Добавляем SessionLocal
 from .. import crud, models, schemas # Импортируем схемы отсюда
 # Импортируем get_detector и нужные классы детекторов
-from ..ml_service.detector import IsolationForestDetector, StatisticalDetector, DbscanDetector, get_detector
-# Импортируем хелпер для получения типизированных настроек (или скопируем его)
-# from .settings import _get_typed_settings # Предполагается, что settings.py в том же уровне
-# --- Временно скопируем логику _get_typed_settings для простоты --- 
-def _get_typed_settings(db: Session) -> Dict[str, Any]:
-    """Вспомогательная функция для получения настроек с конвертацией типов."""
-    # Определяем ключи настроек и их типы (дублируем из settings.py)
-    DEFAULT_SETTINGS = {
-        "limit": {"type": int, "default": 10000},
-        "z_threshold": {"type": float, "default": 3.0},
-        "dbscan_eps": {"type": float, "default": 0.5},
-        "dbscan_min_samples": {"type": int, "default": 5},
-    }
-    settings_from_db = crud.get_all_settings(db)
-    typed_settings = {}
-    for key, info in DEFAULT_SETTINGS.items():
-        value_str = settings_from_db.get(key, str(info["default"]))
-        try:
-            typed_settings[key] = info["type"](value_str)
-        except (ValueError, TypeError):
-            print(f"Warning (anomalies.py): Could not convert setting '{key}' value '{value_str}' to type {info['type']}. Using default.")
-            typed_settings[key] = info["default"]
-    return typed_settings
-# --------------------------------------------------------------
+from ..ml_service.detector import IsolationForestDetector, StatisticalDetector, DbscanDetector, get_detector, AutoencoderDetector
+# --- Импортируем утилиту --- 
+from ..utils import get_typed_settings
 
 router = APIRouter()
 
@@ -249,41 +228,48 @@ def run_detection_and_save(
     db: Session = Depends(get_db)
 ):
     """
-    Запускает поиск аномалий, используя параметры из запроса.
-    Теперь также использует 'severity', возвращаемое детекторами.
+    Runs anomaly detection using the specified algorithms and saves results.
+    Fetches current settings using the utility function.
+    Clears previous anomaly results before saving new ones.
     """
-    algo_list = ', '.join(params.algorithms)
-    # Используем model_dump() для вывода всех параметров
-    print(f"Received request to detect anomalies with params: {params.model_dump()}")
+    print(f"Received request to detect anomalies with params: {params}")
+    anomalies_saved_count = {} 
 
-    # Убираем загрузку настроек из БД
-    # settings = _get_typed_settings(db)
-    limit = params.limit # Берем limit из параметров запроса
-    # print(f"Using settings from DB for detection: {settings}")
+    # --- ДОБАВЛЕНО: Очистка старых аномалий перед новым запуском --- 
+    print("Clearing previous anomaly results...")
+    try:
+        num_deleted = crud.delete_all_anomalies(db=db)
+        print(f"Finished clearing. {num_deleted} anomalies deleted.")
+    except Exception as e:
+        # Логируем ошибку, но не прерываем выполнение детекции
+        print(f"Error clearing anomalies, proceeding anyway: {e}")
+        db.rollback() # Откатываем транзакцию удаления, если она была начата
+    # --------------------------------------------------------------
 
-    # Валидация (остается)
-    if params.entity_type == 'order' and any(algo not in ['statistical_zscore'] for algo in params.algorithms):
-        raise HTTPException(status_code=400, detail=f"Only 'statistical_zscore' is supported for entity_type='order'. Received: {params.algorithms}")
+    # --- Получаем актуальные настройки с помощью утилиты ---
+    current_settings = get_typed_settings(db)
+    print(f"Using current settings for detection: {current_settings}")
+    # ---------------------------------------------------
 
-    # Очистка старых аномалий
-    print(f"Clearing ALL previous anomaly results... (Using limit={params.limit} from request for detection)")
-    num_deleted = crud.delete_all_anomalies(db=db)
-    print(f"Finished clearing. {num_deleted} anomalies deleted.")
-
-    all_detected_anomalies: List[schemas.Anomaly] = [] # Технически, это не используется
-    saved_counts: Dict[str, int] = {algo: 0 for algo in params.algorithms}
-
-    # Цикл по алгоритмам
-    for algorithm_name in params.algorithms:
-        print(f"--- Detecting with {algorithm_name} for entity '{params.entity_type}' (limit={params.limit}) ---")
+    for algo_name in params.algorithms:
         try:
-            detector_instance = get_detector(algorithm_name, params)
-            anomalies_found: List[Dict] = detector_instance.detect(db=db, entity_type=params.entity_type, limit=params.limit)
+            print(f"\n--- Initiating detection with {algo_name} ---")
+            # Создаем параметры детекции, обогащая их текущими настройками
+            # Важно: передаем параметры из запроса (params), если они заданы, иначе из current_settings
+            detector_params = params.model_copy(update={
+                'z_threshold': params.z_threshold if params.z_threshold is not None else current_settings.get('z_threshold', 3.0),
+                'dbscan_eps': params.dbscan_eps if params.dbscan_eps is not None else current_settings.get('dbscan_eps', 0.5),
+                'dbscan_min_samples': params.dbscan_min_samples if params.dbscan_min_samples is not None else current_settings.get('dbscan_min_samples', 5),
+                # Добавляем порог для автоэнкодера из настроек
+                'autoencoder_threshold': current_settings.get('autoencoder_threshold', 0.5)
+            })
 
-            print(f"--- {algorithm_name} detector found {len(anomalies_found)} potential anomalies ---")
-
-            count_saved_for_algo = 0
-            for anomaly_data in anomalies_found:
+            detector_instance = get_detector(algo_name, detector_params)
+            detected_anomalies = detector_instance.detect(db=db, entity_type=params.entity_type, limit=params.limit)
+            print(f"--- {algo_name} detected {len(detected_anomalies)} potential anomalies.")
+            
+            anomalies_saved_for_algo = 0
+            for anomaly_data in detected_anomalies:
                 try:
                     # --- Логика определения entity_type и entity_id (остается) --- 
                     entity_type_found = anomaly_data.get('entity_type', params.entity_type) # Берем из данных или из параметров
@@ -296,7 +282,7 @@ def run_detection_and_save(
                         entity_id = anomaly_data.get('entity_id', anomaly_data.get('id'))
 
                     if entity_id is None:
-                        print(f"Warning: Could not determine entity_id for anomaly from {algorithm_name}. Skipping save.")
+                        print(f"Warning: Could not determine entity_id for anomaly from {algo_name}. Skipping save.")
                         continue
                         
                     # --- Получаем severity и score из данных детектора --- 
@@ -308,32 +294,32 @@ def run_detection_and_save(
                     anomaly_to_create = schemas.AnomalyCreate(
                         entity_type=entity_type_found,
                         entity_id=int(entity_id),
-                        detector_name=algorithm_name,
+                        detector_name=algo_name,
                         detection_timestamp=datetime.utcnow(), # Используем текущее время UTC
                         severity=determined_severity,       # <-- Используем полученную серьезность
                         anomaly_score=anomaly_score,        # <-- Используем полученный score
                         details=anomaly_data.get('details', {}), # Берем детали или пустой dict
-                        description=anomaly_data.get('reason', f"Anomaly detected by {algorithm_name}") # Используем reason если есть
+                        description=anomaly_data.get('reason', f"Anomaly detected by {algo_name}") # Используем reason если есть
                     )
                     # --- Вывод создаваемого объекта для отладки ---
                     # print(f"  Creating anomaly record: {anomaly_to_create.model_dump()}")
                     # ---------------------------------------------
                     crud.create_anomaly(db=db, anomaly=anomaly_to_create)
-                    count_saved_for_algo += 1
+                    anomalies_saved_for_algo += 1
                 except Exception as db_exc:
-                    print(f"Error preparing/adding anomaly from {algorithm_name} to session: {db_exc}")
+                    print(f"Error preparing/adding anomaly from {algo_name} to session: {db_exc}")
                     # Можно добавить traceback для детальной отладки
                     # import traceback
                     # traceback.print_exc()
                     pass # Пропускаем эту аномалию, но продолжаем цикл
 
-            saved_counts[algorithm_name] = count_saved_for_algo
-            print(f"--- Added {count_saved_for_algo} anomalies from {algorithm_name} detector to session ---")
+            anomalies_saved_count[algo_name] = anomalies_saved_for_algo
+            print(f"--- Added {anomalies_saved_for_algo} anomalies from {algo_name} detector to session ---")
 
         except ValueError as e:
-            print(f"Skipping algorithm {algorithm_name} due to configuration error: {e}")
+            print(f"Skipping algorithm {algo_name} due to configuration error: {e}")
         except Exception as e:
-            print(f"Error during detection with {algorithm_name}: {e}")
+            print(f"Error during detection with {algo_name}: {e}")
             # import traceback
             # traceback.print_exc()
 
@@ -347,13 +333,13 @@ def run_detection_and_save(
         raise HTTPException(status_code=500, detail="Failed to save detection results.")
 
     # Формируем ответ
-    total_anomalies = sum(saved_counts.values())
+    total_anomalies = sum(anomalies_saved_count.values())
     response_message = f"Detection completed for entity '{params.entity_type}' using algorithms: [{', '.join(params.algorithms)}]. Found and saved {total_anomalies} anomaly records."
     
     # --- ИСПРАВЛЕНО: Возвращаем только поля, определенные в схеме DetectResponse --- 
     return schemas.DetectResponse(
         message=response_message, 
-        anomalies_saved_by_algorithm=saved_counts
+        anomalies_saved_by_algorithm=anomalies_saved_count
     ) 
     # -----------------------------------------------------------------------------
 

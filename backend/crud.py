@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm import subqueryload
 from decimal import Decimal
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 from datetime import datetime, timedelta
 from sqlalchemy import func, cast, Date
 
@@ -248,13 +248,15 @@ def get_user_activities(
     action_type: Optional[str] = None,
     start_time: Optional[datetime] = None,
     end_time: Optional[datetime] = None
-):
+) -> Tuple[int, List[models.UserActivity]]:
     """
     Получает список активностей с пагинацией и фильтрацией.
     Фильтрует по customer_id, action_type и временному диапазону (timestamp).
+    Возвращает кортеж: (общее количество записей по фильтрам, список активностей).
     """
-    query = db.query(models.UserActivity).options(joinedload(models.UserActivity.customer))
+    query = db.query(models.UserActivity)
 
+    # Применяем фильтры
     if customer_id is not None:
         query = query.filter(models.UserActivity.customer_id == customer_id)
     if action_type:
@@ -264,10 +266,20 @@ def get_user_activities(
     if end_time:
         query = query.filter(models.UserActivity.timestamp <= end_time)
 
-    # Сортируем по времени по умолчанию (сначала новые)
-    query = query.order_by(models.UserActivity.timestamp.desc())
+    # Считаем общее количество записей *после* применения фильтров
+    total_count = query.count()
 
-    return query.offset(skip).limit(limit).all()
+    # Применяем сортировку, пагинацию и загрузку связей к основному запросу
+    activities = (
+        query
+        .options(joinedload(models.UserActivity.customer)) # Eager load customer
+        .order_by(models.UserActivity.timestamp.desc()) # Сортируем по времени (сначала новые)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    return total_count, activities
 
 # === UserActivity CRUD (заготовка) ===
 # ... 
@@ -397,5 +409,38 @@ def get_anomaly_counts_by_detector(db: Session) -> List[Dict]:
 
     results = query.all()
     return [{'detector_name': row.detector_name, 'count': row.count} for row in results]
+
+# --- НОВАЯ CRUD функция для получения скоров аномалий ---
+def get_anomaly_scores_by_detector(
+    db: Session,
+    detector_name: str,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    limit: int = 10000 # Ограничение на всякий случай
+) -> List[float]:
+    """
+    Получает список значений anomaly_score для указанного детектора.
+    Фильтрует по detector_name и опционально по временному диапазону.
+    Исключает записи, где anomaly_score is None.
+    """
+    print(f"CRUD: Getting anomaly scores for detector '{detector_name}'...")
+    query = db.query(models.Anomaly.anomaly_score)
+    query = query.filter(models.Anomaly.detector_name == detector_name)
+    query = query.filter(models.Anomaly.anomaly_score.isnot(None))
+
+    # Фильтрация по времени
+    if start_time:
+        query = query.filter(models.Anomaly.detection_timestamp >= start_time)
+    if end_time:
+        query = query.filter(models.Anomaly.detection_timestamp <= end_time)
+
+    # Добавляем сортировку и лимит для предотвращения слишком больших запросов
+    query = query.order_by(models.Anomaly.detection_timestamp.desc()).limit(limit)
+
+    results = query.all()
+    # .all() вернет список кортежей (scalar_value,), извлекаем первые элементы
+    scores = [row[0] for row in results]
+    print(f"CRUD: Found {len(scores)} scores for detector '{detector_name}'.")
+    return scores
 
 # ... (rest of the file) ... 

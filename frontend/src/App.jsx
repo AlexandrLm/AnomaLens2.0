@@ -34,7 +34,8 @@ import {
   Brightness7,
   SearchRounded,
   NotificationsNone,
-  FiberManualRecord
+  FiberManualRecord,
+  Info
 } from '@mui/icons-material';
 
 import DashboardPage from './pages/DashboardPage';
@@ -44,6 +45,7 @@ import CustomersPage from './pages/CustomersPage';
 import ProductsPage from './pages/ProductsPage';
 import OrdersPage from './pages/OrdersPage';
 import ActivitiesPage from './pages/ActivitiesPage';
+import ExplanationPage from './pages/ExplanationPage';
 import theme from './theme';
 
 const drawerWidth = 280;
@@ -57,6 +59,7 @@ const menuItems = [
   { text: 'Заказы', icon: <ShoppingCart />, path: '/orders' },
   { text: 'Активности', icon: <ReceiptLong />, path: '/activities' },
   { divider: true },
+  { text: 'О Методах', icon: <Info />, path: '/explanation' },
   { text: 'Настройки', icon: <SettingsIcon />, path: '/settings' },
 ];
 
@@ -274,6 +277,7 @@ function App() {
               <Route path="/products" element={<ProductsPage />} />
               <Route path="/orders" element={<OrdersPage />} />
               <Route path="/activities" element={<ActivitiesPage />} />
+              <Route path="/explanation" element={<ExplanationPage />} />
             </Routes>
           </Box>
         </Box>

@@ -15,16 +15,10 @@ from .. import schemas # <-- Добавляем или проверяем имп
 from ..schemas import DetectionParams
 
 # --- Импортируем общие элементы --- 
+# Восстанавливаем импорт необходимых констант
 from .common import SAVED_MODELS_DIR, NUMERICAL_FEATURES, CATEGORICAL_FEATURE, engineer_features
 # --- Импортируем AutoencoderDetector --- 
 from .autoencoder_detector import AutoencoderDetector
-
-# --- Удаляем определения, перенесенные в common.py ---
-# SAVED_MODELS_DIR = "backend/ml_service/saved_models"
-# NUMERICAL_FEATURES = [...] 
-# CATEGORICAL_FEATURE = 'action_type'
-# def engineer_features(...): ...
-# ----------------------------------------------------
 
 # Путь для сохранения модели по умолчанию
 DEFAULT_MODEL_DIR = "backend/ml_service/saved_models"
@@ -33,177 +27,6 @@ DEFAULT_MODEL_PATH = os.path.join(DEFAULT_MODEL_DIR, "isolation_forest_detector.
 # --- Общие настройки и функции ---
 if not os.path.exists(SAVED_MODELS_DIR):
     os.makedirs(SAVED_MODELS_DIR)
-
-def engineer_features(activities: List[models.UserActivity]) -> Optional[pd.DataFrame]:
-    """
-    Преобразует список активностей в DataFrame и рассчитывает признаки.
-    Возвращает DataFrame с ID, timestamp и всеми рассчитанными признаками (числовыми и категориальными).
-    """
-    if not activities: return None
-    data_list = [{"id": act.id, "customer_id": act.customer_id,
-                  "timestamp": pd.to_datetime(act.timestamp), "action_type": act.action_type,
-                  "ip_address": act.ip_address,
-                  "details_order_total": float(act.details.get("order_total", 0)) if act.details else 0,
-                  "details_quantity": int(act.details.get("quantity", 0)) if act.details else 0}
-                 for act in activities]
-    df = pd.DataFrame(data_list)
-    if df.empty: return None
-
-    print(f"Engineering features for {len(df)} activities...")
-    df = df.sort_values(by="timestamp")
-    # --- Уникальность timestamp ---
-    if df['timestamp'].duplicated().any():
-        print("Warning: Duplicate timestamps detected. Adding nanosecond offset.")
-        df['timestamp'] = df['timestamp'] + pd.to_timedelta(np.arange(len(df)), unit='ns')
-    df = df.sort_values(by="timestamp").reset_index(drop=True)
-    # --------------------------
-
-    start_fe = time.time()
-
-    print("\n--- Starting individual feature calculations ---")
-
-    # Time since last activity
-    try:
-        print("Calculating 'time_since_last_activity_ip'...")
-        df['time_since_last_activity_ip'] = df.groupby('ip_address')['timestamp'].diff().dt.total_seconds().fillna(0)
-        print("'time_since_last_activity_ip' calculated.")
-    except Exception as e:
-        print(f"\n!!! ERROR calculating 'time_since_last_activity_ip': {e} !!!")
-        # Выведем информацию о df перед ошибкой
-        try: df.info()
-        except: print("Could not print df info on error.")
-        return None # Прерываем, если этот базовый признак не рассчитался
-
-    # Rolling count
-    try:
-        print("Calculating 'actions_in_last_5min_ip'...")
-        df_indexed = df.set_index('timestamp')
-        if not df_indexed.index.is_unique: print("Warning: Timestamp index is not unique before rolling count!")
-        rolling_count = df_indexed.groupby('ip_address')['id'].rolling('5min').count()
-        df['actions_in_last_5min_ip'] = rolling_count.reset_index(level=0, drop=True).fillna(0)
-        print("'actions_in_last_5min_ip' calculated.")
-    except Exception as e:
-        print(f"\n!!! ERROR calculating 'actions_in_last_5min_ip': {e} !!!")
-        try: df.info()
-        except: print("Could not print df info on error.")
-        return None
-
-    # Failed logins flag
-    try:
-        print("Calculating 'is_failed_login'...")
-        df['is_failed_login'] = (df['action_type'] == 'failed_login').astype(int)
-        print("'is_failed_login' calculated.")
-    except Exception as e:
-         print(f"\n!!! ERROR calculating 'is_failed_login': {e} !!!")
-         try: df.info()
-         except: print("Could not print df info on error.")
-         return None
-
-    # Rolling sum for failed logins
-    try:
-        print("Calculating 'failed_logins_in_last_15min_ip'...")
-        df_indexed = df.set_index('timestamp') # Re-index
-        if not df_indexed.index.is_unique: print("Warning: Timestamp index is not unique before rolling sum!")
-        # --- Ключевой момент: Проверим dtype 'is_failed_login' перед sum ---
-        print(f"  dtype of 'is_failed_login' before rolling sum: {df_indexed['is_failed_login'].dtype}")
-        rolling_sum = df_indexed.groupby('ip_address')['is_failed_login'].rolling('15min').sum()
-        df['failed_logins_in_last_15min_ip'] = rolling_sum.reset_index(level=0, drop=True).fillna(0)
-        print("'failed_logins_in_last_15min_ip' calculated.")
-    except Exception as e:
-        print(f"\n!!! ERROR calculating 'failed_logins_in_last_15min_ip': {e} !!!")
-        # Если ошибка здесь, выведем типы и сам столбец is_failed_login
-        print("--- Error Details ---")
-        try:
-            print("df dtypes:")
-            df.info()
-            print("\ndf['is_failed_login'].value_counts():")
-            print(df['is_failed_login'].value_counts())
-        except: print("Could not print detailed error info.")
-        print("--- End Error Details ---")
-        return None
-
-    # Timestamp features
-    try:
-        print("Calculating timestamp features...")
-        df['timestamp_hour'] = df['timestamp'].dt.hour
-        df['timestamp_dayofweek'] = df['timestamp'].dt.weekday
-        print("Timestamp features calculated.")
-    except Exception as e:
-        print(f"\n!!! ERROR calculating timestamp features: {e} !!!")
-        try: df.info()
-        except: print("Could not print df info on error.")
-        return None
-
-    # Customer ID fillna
-    try:
-        print("Processing 'customer_id'...")
-        df['customer_id'] = df['customer_id'].fillna(-1)
-        print("'customer_id' processed.")
-    except Exception as e:
-        print(f"\n!!! ERROR processing 'customer_id': {e} !!!")
-        try: df.info()
-        except: print("Could not print df info on error.")
-        return None
-
-    print("--- Finished individual feature calculations ---\n")
-
-    # --- Финальная очистка типов (оставляем) ---
-    print("\n--- Starting final type conversion and cleanup ---") # New print
-    for col in NUMERICAL_FEATURES:
-        if col in df.columns:
-            print(f"\nProcessing column: '{col}'") # New print
-            # Check initial state
-            print(f"  Initial - dtype: {df[col].dtype}, non-nulls: {df[col].notna().sum()}/{len(df)}, head(5):\n{df[col].head().to_string()}") # New print
-
-            # 1. Coerce to numeric
-            try:
-                original_dtype_before_coerce = df[col].dtype
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-                nan_count_after_coerce = df[col].isna().sum()
-                print(f"  After pd.to_numeric(errors='coerce') - dtype: {df[col].dtype}, NaNs created: {nan_count_after_coerce} (from original type {original_dtype_before_coerce})") # New print
-            except Exception as e:
-                 print(f"  ERROR during pd.to_numeric for {col}: {e}")
-                 continue # Skip to next column if coercion fails
-
-            # 2. Handle infinities
-            try:
-                inf_mask = df[col].isin([np.inf, -np.inf])
-                inf_count = inf_mask.sum()
-                if inf_count > 0:
-                    print(f"  Replacing {inf_count} infinite values in '{col}' with NaN") # New print
-                    df[col] = df[col].replace([np.inf, -np.inf], np.nan)
-            except Exception as e:
-                print(f"  ERROR during infinity check/replace for {col}: {e}")
-
-            # 3. Fill NaN values
-            try:
-                nan_count_before_fillna = df[col].isna().sum()
-                if nan_count_before_fillna > 0:
-                    fill_value = 0.0 # Default fill value
-                    print(f"  Filling {nan_count_before_fillna} NaN values in '{col}' with {fill_value}") # New print
-                    df[col] = df[col].fillna(fill_value)
-            except Exception as e:
-                print(f"  ERROR during fillna for {col}: {e}")
-
-            # 4. Final cast to float
-            try:
-                df[col] = df[col].astype(float)
-                print(f"  Final - dtype: {df[col].dtype}, non-nulls: {df[col].notna().sum()}, head(5):\n{df[col].head().to_string()}") # New print
-            except Exception as e:
-                print(f"  ERROR during final .astype(float) for {col}: {e}")
-
-        else:
-             print(f"Warning: Expected numerical feature '{col}' not found after engineering.")
-    print("--- Finished final type conversion and cleanup ---\n") # New print
-    # ------------------------------------------------------------
-
-    # Drop helper column
-    df = df.drop(columns=['is_failed_login'], errors='ignore')
-
-    print(f"Feature engineering took {time.time() - start_fe:.2f} seconds.")
-    # УДАЛЕНО: Лог типов в конце engineer_features, так как он теперь внутри цикла
-    # print(f"Final dtypes after engineer_features:\n{df.dtypes}") 
-    return df
 
 # --- Детектор: Isolation Forest ---
 class IsolationForestDetector:
@@ -303,29 +126,25 @@ class IsolationForestDetector:
         return final_df
 
     def train(self, db: Session, entity_type: str, limit: int):
-        """
-        Обучает модель Isolation Forest на активностях пользователя.
-        Теперь загружает данные внутри с использованием db и limit.
-        """
         print("IF Training: Starting...")
         if entity_type != 'activity':
-            print(f"IF Training: Skipped. Supports only 'activity', got '{entity_type}'.")
+            print(f"IF Training: Currently only supports 'activity'. Skipping training for '{entity_type}'.")
             return
 
+        print(f"IF Training: Loading last {limit} activities...")
+        # --- FIX: Unpack the tuple returned by crud.get_user_activities ---
+        _total_count, activities = crud.get_user_activities(db, limit=limit)
+        if not activities:
+            print(f"IF Training: No activities found.")
+            return
+        print(f"IF Training: Loaded {len(activities)} activities.")
+        # -------------------------------------------------------------------
+
         try:
-            print(f"IF Training: Loading last {limit} activities...")
-            activities = crud.get_user_activities(db, skip=0, limit=limit)
-            if not activities:
-                print("IF Training: No activities found to train on.")
-                return
-            print(f"IF Training: Loaded {len(activities)} activities.")
+            df_engineered = engineer_features(activities)
+            if df_engineered is None: raise ValueError("Feature engineering failed")
 
-            df = engineer_features(activities)
-            if df is None or df.empty:
-                print("IF Training: DataFrame is empty after feature engineering.")
-                return
-
-            features_df = self._prepare_features(df, is_training=True)
+            features_df = self._prepare_features(df_engineered, is_training=True)
             if features_df is None or features_df.empty:
                 print("IF Training: No features to train on after preparation.")
                 return
@@ -341,27 +160,23 @@ class IsolationForestDetector:
             # self._initialize_new_model()
 
     def detect(self, db: Session, entity_type: str, limit: int) -> List[Dict[str, Any]]:
-        """
-        Обнаруживает аномалии в новых данных, используя обученную модель.
-        Возвращает список словарей с информацией об аномалиях, включая severity.
-        """
         print("IF Detector: Starting detection...")
-        if not self.model or not self.scaler or not self.feature_names:
-            print("IF Detector: Model or scaler or features not loaded/trained. Cannot detect.")
+        if entity_type != 'activity':
+            print(f"IF Detector: Currently only supports 'activity'. Skipping detection for '{entity_type}'.")
+            return []
+        if not self.model or not self.scaler or not self.feature_names or self.ohe_categories is None:
+            print("IF model/scaler/features not loaded. Cannot detect.")
             return []
 
-        activities = crud.get_user_activities(db, limit=limit)
-        if not activities:
-            print("IF Detector: No activities found for detection.")
-            return []
-
-        df = engineer_features(activities)
-        if df is None or df.empty:
-            print("IF Detector: Feature engineering returned empty DataFrame.")
-            return []
+        # --- FIX: Unpack the tuple returned by crud.get_user_activities ---
+        _total_count, activities = crud.get_user_activities(db, limit=limit)
+        if not activities: return [] # No data to check
+        # -------------------------------------------------------------------
+        df_engineered = engineer_features(activities)
+        if df_engineered is None: return []
 
         # Подготовка признаков (OHE + Масштабирование) как при обучении
-        X = self._prepare_features(df, is_training=False)
+        X = self._prepare_features(df_engineered, is_training=False)
         if X is None:
             print("IF Detector: Feature preparation failed during detection.")
             return []
@@ -382,7 +197,7 @@ class IsolationForestDetector:
         anomaly_indices = np.where(predictions == -1)[0] # Индексы аномалий
 
         for idx in anomaly_indices:
-            activity_id = df.iloc[idx]['id']
+            activity_id = df_engineered.iloc[idx]['id']
             current_score = scores[idx]
 
             # --- ОПРЕДЕЛЕНИЕ СЕРЬЕЗНОСТИ ---
@@ -465,26 +280,17 @@ class StatisticalDetector:
             self._load_stats(entity_type)
 
     def train(self, db: Session, entity_type: str, limit: int = 10000):
-        """
-        Рассчитывает и сохраняет статистику (среднее и стандартное отклонение)
-        для числовых признаков указанного типа сущности.
-        """
         print(f"Starting statistical training for '{entity_type}'...")
-        data = None
-        feature_columns = []
-
         if entity_type == 'activity':
-            activities = crud.get_user_activities(db, skip=0, limit=limit)
-            if not activities:
-                print("No activity data found for statistical training.")
-                return
+            # --- FIX: Unpack the tuple returned by crud.get_user_activities ---
+            _total_count, activities = crud.get_user_activities(db, limit=limit)
+            if not activities: print("Statistical Training (activity): No data found."); return
+            # -------------------------------------------------------------------
             df_features = engineer_features(activities)
             if df_features is None or df_features.empty:
-                print("Feature engineering failed or returned empty DataFrame for activities.")
+                print("Statistical Training (activity): Feature engineering failed or returned empty.")
                 return
-            data = df_features
-            # Используем числовые признаки, определенные глобально или специфичные для активностей
-            feature_columns = [col for col in NUMERICAL_FEATURES if col in df_features.columns]
+            columns_to_process = NUMERICAL_FEATURES
 
         elif entity_type == 'order':
             orders = crud.get_orders(db, skip=0, limit=limit)
@@ -503,31 +309,27 @@ class StatisticalDetector:
             if df_orders.empty:
                 print("DataFrame creation failed or returned empty for orders.")
                 return
-            data = df_orders
+            df_features = df_orders
             # Определяем числовые признаки для заказов
-            feature_columns = ['total_amount', 'item_count']
+            columns_to_process = ['total_amount', 'item_count']
             # Убедимся, что эти колонки существуют
-            feature_columns = [col for col in feature_columns if col in data.columns]
+            columns_to_process = [col for col in columns_to_process if col in df_features.columns]
         else:
             print(f"Unsupported entity_type '{entity_type}' for statistical training.")
             return
 
-        if data is None or data.empty:
-            print(f"No data available for statistical training for '{entity_type}'.")
-            return
-
-        if not feature_columns:
+        if not columns_to_process:
             print(f"No numerical feature columns found for '{entity_type}' in the data.")
             return
 
-        print(f"Calculating stats for columns: {feature_columns}")
+        print(f"Calculating stats for columns: {columns_to_process}")
         entity_stats = {}
         try:
-            for col in feature_columns:
+            for col in columns_to_process:
                 # --- Добавляем проверку на наличие числовых данных перед агрегацией ---
-                if pd.api.types.is_numeric_dtype(data[col]):
-                    mean_val = data[col].mean()
-                    std_val = data[col].std()
+                if pd.api.types.is_numeric_dtype(df_features[col]):
+                    mean_val = df_features[col].mean()
+                    std_val = df_features[col].std()
                     # Добавляем проверку на NaN/Inf в статистике
                     if pd.isna(mean_val) or pd.isna(std_val) or std_val == 0:
                         print(f"  Warning: Could not calculate valid stats for '{col}' (mean={mean_val}, std={std_val}). Skipping.")
@@ -545,149 +347,152 @@ class StatisticalDetector:
             print(f"Error during statistical calculation for '{entity_type}': {e}")
             # Выведем информацию о типах данных при ошибке
             print("Data types causing potential issue:")
-            print(data[feature_columns].dtypes)
+            print(df_features[columns_to_process].dtypes)
 
 
     def detect(self, db: Session, entity_type: str, limit: int) -> List[Dict[str, Any]]:
-        """
-        Обнаруживает аномалии на основе Z-score.
-        Возвращает список словарей с информацией об аномалиях, включая severity.
-        """
         print(f"Statistical Detector ({entity_type}): Starting detection...")
-        df = None
-        feature_to_check = None
-        id_field = 'id' # Default id field
+        if not self.stats.get(entity_type):
+            print(f"Warning: Stats not loaded for entity_type '{entity_type}'. Detection might be inaccurate. Trying load...")
+            self._load_stats(entity_type)
+            if not self.stats.get(entity_type):
+                print(f"Error: Stats for '{entity_type}' could not be loaded. Cannot perform detection.")
+                return []
+
+        all_anomalies = [] # Initialize list to store all found anomalies
+        df_features = None
+        id_column_name = 'id' # Default ID column name
 
         if entity_type == 'activity':
-            data = crud.get_user_activities(db, limit=limit)
-            # Define the primary feature to check for anomalies in activities
-            feature_to_check = "time_since_last_activity_ip" # Or another key engineered feature
-            if not data:
-                 print(f"Statistical Detector ({entity_type}): No data found."); return []
-            # Feature Engineering для активностей
-            df = engineer_features(data)
-            if df is None or df.empty:
-                print(f"Statistical Detector ({entity_type}): Feature eng. failed or returned empty."); return []
+            _total_count, activities = crud.get_user_activities(db, limit=limit)
+            if not activities: return []
+            df_features = engineer_features(activities)
+            if df_features is None or df_features.empty: return []
+            # Features to check for activities
+            features_to_check = [f for f in NUMERICAL_FEATURES if f in df_features.columns]
 
         elif entity_type == 'order':
+            # --- Order logic remains largely the same, but we adapt it slightly --- 
             data = crud.get_orders(db, limit=limit)
-            # Define the primary feature to check for anomalies in orders
-            feature_to_check = "total_amount"
-            if not data:
-                 print(f"Statistical Detector ({entity_type}): No data found."); return []
-            # Преобразуем заказы в DataFrame
-            order_list = [o.__dict__ for o in data] # Use __dict__ or a custom method if needed
-            df = pd.DataFrame(order_list)
-            # Ensure required columns exist after potential __dict__ conversion issues
-            if 'id' in df.columns: df.rename(columns={'id': 'order_id'}, inplace=True) # Example rename if needed
-            id_field = 'order_id' # ID field for orders
-            if df.empty:
-                 print(f"Statistical Detector ({entity_type}): DataFrame empty."); return []
+            if not data: print(f"Statistical Detector ({entity_type}): No data found."); return []
+            order_list = [o.__dict__ for o in data] 
+            df_features = pd.DataFrame(order_list)
+            if df_features.empty: print(f"Statistical Detector ({entity_type}): DataFrame empty."); return []
+            # Ensure required columns exist 
+            if 'id' in df_features.columns: df_features.rename(columns={'id': 'order_id'}, inplace=True) 
+            id_column_name = 'order_id' # Use the correct ID column for orders
+            # Features to check for orders
+            features_to_check = ['total_amount'] # Check only total_amount for orders for now
+            features_to_check = [col for col in features_to_check if col in df_features.columns] 
+            # ---------------------------------------------------------------------
         else:
             raise ValueError(f"Unsupported entity_type for StatisticalDetector: {entity_type}")
 
-        # --- ИСПРАВЛЕНО: Загрузка и использование статистики ---
-        # 1. Убедимся, что статистика для entity_type загружена (или пытаемся загрузить снова)
-        if entity_type not in self.stats:
-            print(f"Stats for {entity_type} not pre-loaded. Attempting load now.")
-            self._load_stats(entity_type) # Load stats for the specific entity type
-
-        # 2. Проверяем наличие статистики и нужной колонки
-        if entity_type not in self.stats:
-             print(f"Statistical Detector ({entity_type}): Stats failed to load. Cannot detect.")
+        if df_features is None or df_features.empty:
+             print(f"Statistical Detector ({entity_type}): No features DataFrame to process.")
              return []
-        if feature_to_check not in self.stats[entity_type]:
-            print(f"Statistical Detector ({entity_type}): Stats not available for feature '{feature_to_check}'. Cannot detect.")
+        if not features_to_check:
+            print(f"Statistical Detector ({entity_type}): No features identified to check.")
             return []
-        if feature_to_check not in df.columns:
-             print(f"Statistical Detector ({entity_type}): Feature '{feature_to_check}' not found in DataFrame after processing. Cannot detect.")
-             return []
 
-        # 3. Получаем mean и std из загруженной статистики
-        stats_for_feature = self.stats[entity_type][feature_to_check]
-        mean = stats_for_feature.get('mean')
-        std = stats_for_feature.get('std')
+        # --- Loop through each feature to check --- 
+        for feature_name in features_to_check:
+            print(f"\nStatistical Detector ({entity_type}): Checking feature '{feature_name}'...")
+            
+            # 1. Check if stats exist for this feature
+            if feature_name not in self.stats.get(entity_type, {}):
+                print(f"  Stats not available for feature '{feature_name}'. Skipping.")
+                continue
 
-        # 4. Проверяем валидность mean и std
-        if mean is None or std is None or std == 0 or pd.isna(mean) or pd.isna(std):
-             print(f"Statistical Detector ({entity_type}): Invalid stats (mean={mean}, std={std}) for '{feature_to_check}'. Cannot detect.")
-             return []
-        # -------------------------------------------------------
+            stats_for_feature = self.stats[entity_type][feature_name]
+            mean = stats_for_feature.get('mean')
+            std = stats_for_feature.get('std')
 
-        print(f"Statistical Detector ({entity_type}): Using stats for '{feature_to_check}': mean={mean:.2f}, std={std:.2f}, z_threshold={self.z_threshold}")
+            if mean is None or std is None or std == 0 or pd.isna(mean) or pd.isna(std):
+                 print(f"  Invalid stats (mean={mean}, std={std}) for '{feature_name}'. Skipping.")
+                 continue
 
-        anomalies = []
-        try:
-            # Убедимся, что колонка числовая перед расчетом
-            if not pd.api.types.is_numeric_dtype(df[feature_to_check]):
-                print(f"Warning: Column '{feature_to_check}' is not numeric. Attempting conversion.")
-                df[feature_to_check] = pd.to_numeric(df[feature_to_check], errors='coerce')
-                df.dropna(subset=[feature_to_check], inplace=True) # Удаляем строки, где конвертация не удалась
+            print(f"  Using stats: mean={mean:.4f}, std={std:.4f}, z_threshold={self.z_threshold}")
 
-            if df.empty:
-                print(f"Statistical Detector ({entity_type}): DataFrame is empty after numeric conversion/dropna for '{feature_to_check}'.")
-                return []
+            # 2. Calculate Z-scores for this feature
+            try:
+                 # Ensure the column is numeric
+                 if not pd.api.types.is_numeric_dtype(df_features[feature_name]):
+                    print(f"  Warning: Column '{feature_name}' is not numeric. Attempting conversion.")
+                    # Create a copy to avoid SettingWithCopyWarning if conversion modifies the original df_features slice
+                    feature_series = pd.to_numeric(df_features[feature_name], errors='coerce')
+                    # We need the original indices even after dropping NaNs for matching later
+                    valid_indices = feature_series.dropna().index 
+                    if valid_indices.empty:
+                        print(f"  DataFrame is empty after numeric conversion/dropna for '{feature_name}'. Skipping feature.")
+                        continue
+                 else:
+                     feature_series = df_features[feature_name]
+                     valid_indices = feature_series.index # All indices are valid initially
 
-            z_scores = (df[feature_to_check] - mean) / std
-            potential_anomaly_indices = df.index[np.abs(z_scores) >= self.z_threshold]
+                 # Calculate Z-scores only for valid numeric entries
+                 z_scores = (feature_series.loc[valid_indices] - mean) / std
+                 potential_anomaly_indices = z_scores.index[np.abs(z_scores) >= self.z_threshold]
 
-            print(f"Statistical Detector ({entity_type}): Found {len(potential_anomaly_indices)} potential anomalies based on z-score >= {self.z_threshold}.")
-            # --- ДОБАВЛЕН ЛОГ: Вывод распределения Z-score перед фильтрацией ---
-            print(f"Statistical Detector ({entity_type}): Z-score distribution summary:\n{z_scores.describe()}")
-            # ------------------------------------------------------------------
+                 print(f"  Found {len(potential_anomaly_indices)} potential anomalies for '{feature_name}'.")
+                 if not potential_anomaly_indices.empty:
+                     print(f"  Z-score distribution for '{feature_name}':\n{z_scores.describe()}")
 
-            for idx in potential_anomaly_indices:
-                row = df.loc[idx]
-                entity_id = row[id_field]
-                current_z = z_scores.loc[idx]
-                current_value = row[feature_to_check]
+                 # 3. Format anomalies found for this feature
+                 for idx in potential_anomaly_indices:
+                    row = df_features.loc[idx]
+                    # Use the correct ID column name determined earlier
+                    entity_id = row.get(id_column_name) 
+                    if entity_id is None: continue # Skip if ID is missing
+                    
+                    current_z = z_scores.loc[idx]
+                    current_value = feature_series.loc[idx] # Use the numeric series
 
-                # Определение Severity (логика без изменений)
-                severity = "Medium"
-                if abs(current_z) >= self.z_threshold * 1.5:
-                    severity = "High"
-                elif abs(current_z) >= self.z_threshold:
                     severity = "Medium"
+                    if abs(current_z) >= self.z_threshold * 1.5: severity = "High"
 
-                # --- УЛУЧШЕНО: Формирование Reason --- 
-                reason_str = (
-                    f"Value of '{feature_to_check}' ({current_value:.4f}) deviates significantly from the mean ({mean:.4f}). "
-                    f"Z-score = {current_z:.2f}, which is {('above' if current_z > 0 else 'below')} the threshold of {self.z_threshold}. "
-                    f"(std={std:.4f})"
-                )
-                # ------------------------------------
+                    # --- Перевод Reason на русский --- 
+                    deviation_direction = "выше" if current_z > 0 else "ниже"
+                    reason_str = (
+                        f"Значение признака '{feature_name}' ({current_value:.4f}) значительно отклоняется от среднего ({mean:.4f}). "
+                        f"Z-оценка = {current_z:.2f}, что {deviation_direction} порога {self.z_threshold}. "
+                        f"(Ст. откл.={std:.4f})"
+                    )
+                    # ---------------------------------
 
-                anomaly_info = {
-                    "entity_type": entity_type,
-                    "entity_id": int(entity_id),
-                    "reason": reason_str, # <--- Используем улучшенный reason
-                    "details": {
-                        "feature": feature_to_check,
-                        "value": float(current_value),
-                        "mean": float(mean),
-                        "std": float(std),
-                        "z_score": float(current_z)
-                    },
-                    "severity": severity,
-                    "anomaly_score": float(abs(current_z))
-                }
-                if entity_type == 'activity': anomaly_info['activity_id'] = int(entity_id)
-                elif entity_type == 'order': anomaly_info['order_id'] = int(entity_id)
+                    anomaly_info = {
+                        "entity_type": entity_type,
+                        "entity_id": int(entity_id),
+                        "reason": reason_str,
+                        "details": {
+                            "feature": feature_name,
+                            "value": float(current_value),
+                            "mean": float(mean),
+                            "std": float(std),
+                            "z_score": float(current_z)
+                        },
+                        "severity": severity,
+                        "anomaly_score": float(abs(current_z))
+                    }
+                    # Add specific ID for convenience if needed (might be redundant with entity_id)
+                    # if entity_type == 'activity': anomaly_info['activity_id'] = int(entity_id)
+                    # elif entity_type == 'order': anomaly_info['order_id'] = int(entity_id)
 
-                anomalies.append(anomaly_info)
+                    all_anomalies.append(anomaly_info)
 
-        except KeyError as e:
-            print(f"Statistical Detector ({entity_type}): KeyError during Z-score calculation or row access: {e}. Check if '{feature_to_check}' or '{id_field}' exists.")
-            # print(f"DataFrame columns: {df.columns.tolist()}") # Раскомментировать для отладки
-            return []
-        except Exception as e:
-            print(f"Statistical Detector ({entity_type}): Error during Z-score calculation/anomaly formatting: {e}")
-            # import traceback
-            # traceback.print_exc() # Раскомментировать для детальной отладки
-            return []
+            except KeyError as e:
+                 print(f"  KeyError for feature '{feature_name}': {e}. Check if feature or '{id_column_name}' exists.")
+                 # print(f"DataFrame columns: {df_features.columns.tolist()}")
+                 continue # Skip to the next feature
+            except Exception as e:
+                 print(f"  Error during Z-score calculation/anomaly formatting for '{feature_name}': {e}")
+                 # import traceback
+                 # traceback.print_exc()
+                 continue # Skip to the next feature
+        # --- End of loop through features --- 
 
-        print(f"Statistical Detector ({entity_type}): Formatted {len(anomalies)} anomalies.")
-        return anomalies
+        print(f"\nStatistical Detector ({entity_type}): Completed checks. Total anomalies found across all features: {len(all_anomalies)}.")
+        return all_anomalies
 
 # --- Детектор: DBSCAN ---
 class DbscanDetector:
@@ -739,14 +544,15 @@ class DbscanDetector:
     def detect(self, db: Session, entity_type: str, limit: int) -> List[Dict[str, Any]]:
         print(f"DBSCAN Detector: Starting detection for {entity_type}...")
         if entity_type != 'activity':
-             print(f"DBSCAN currently only supports 'activity'. Skipping for '{entity_type}'.")
-             return []
+            print(f"DBSCAN currently only supports 'activity'. Skipping detection for '{entity_type}'.")
+            return []
 
-        activities = crud.get_user_activities(db, limit=limit)
-        if not activities: print("DBSCAN Detector: No activity data found."); return []
-
+        # --- FIX: Unpack the tuple returned by crud.get_user_activities ---
+        _total_count, activities = crud.get_user_activities(db, limit=limit)
+        if not activities: return [] # No data to check
+        # -------------------------------------------------------------------
         df_engineered = engineer_features(activities)
-        if df_engineered is None or df_engineered.empty: print("DBSCAN: Feature eng. failed."); return []
+        if df_engineered is None: return []
 
         # Используем OHE+Scaling специфичный для DBSCAN
         df_prepared = self._prepare_features(df_engineered)
@@ -804,14 +610,5 @@ def get_detector(algorithm: str, params: schemas.DetectionParams):
          # Используем импортированный класс
          return AutoencoderDetector() # Correctly references the imported class
     else:
-        raise ValueError(f"Unknown algorithm: {algorithm}")
-
-
-
-# --- Главная функция для запуска детекции --- (устарела, логика перенесена в API)
-# def run_detection_and_save(db: Session, detector: Any, entity_type: str, limit: int):
-#     # ... (код из старой версии)
-
-# --- Главная функция для запуска обучения --- (устарела, логика перенесена в API)
-# def train_models(db: Session, detectors: List[Any], entity_type: str, limit: int):
-#     # ... (код из старой версии) 
+        print(f"Unsupported algorithm: {algorithm}")
+        return None

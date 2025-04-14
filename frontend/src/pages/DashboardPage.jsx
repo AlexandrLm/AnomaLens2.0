@@ -4,12 +4,12 @@ import {
     Typography, Paper, Grid, CircularProgress, Alert, Card, CardContent, Button,
     Box, List, ListItem, ListItemText, Divider, Chip, Stack, useTheme, IconButton, ListItemIcon, Collapse,
     Dialog, DialogTitle, DialogContent, DialogActions, TableContainer, Table, TableBody, TableRow, TableCell, Link as MuiLink,
-    Accordion, AccordionSummary, AccordionDetails
+    Accordion, AccordionSummary, AccordionDetails, Select, MenuItem, FormControl, InputLabel
 } from '@mui/material';
 import { 
     Train, Search, ExpandLess, ExpandMore, ErrorOutline, CheckCircleOutline, Settings, WarningAmberOutlined, InfoOutlined,
     Close as CloseIcon, Link as LinkIcon, BugReport, HistoryToggleOff,
-    ExpandMore as ExpandMoreIcon
+    ExpandMore as ExpandMoreIcon, Dashboard as DashboardIcon
 } from '@mui/icons-material';
 import { useNavigate, Link as RouterLink } from 'react-router-dom';
 import { format, parseISO } from 'date-fns';
@@ -296,6 +296,9 @@ const AnomalyDetailsModal = ({ open, onClose, anomalyDetails, loading, error }) 
     );
 };
 
+// --- Импорт нового компонента графика --- 
+import ScoreDistributionChart from '../components/ScoreDistributionChart';
+
 function DashboardPage() {
     const theme = useTheme();
     const navigate = useNavigate();
@@ -354,6 +357,13 @@ function DashboardPage() {
     const [selectedAnomalyDetails, setSelectedAnomalyDetails] = useState(null);
     const [modalLoading, setModalLoading] = useState(false);
     const [modalError, setModalError] = useState('');
+
+    // --- Состояние для графика распределения скоров --- 
+    const [selectedDetector, setSelectedDetector] = useState('isolation_forest'); // Детектор по умолчанию
+    const [scoreData, setScoreData] = useState([]);
+    const [scoreLoading, setScoreLoading] = useState(false);
+    const [scoreError, setScoreError] = useState('');
+    // --------------------------------------------------
 
     // --- Подготовка данных и опций для графиков (используем useMemo) ---
     const activityTimelineChartData = useMemo(() => {
@@ -509,13 +519,38 @@ function DashboardPage() {
     }, []);
     // ---------------------------------------------------------
 
+    // --- Функция для загрузки скоров --- 
+    const fetchScores = useCallback(async (detector) => {
+        if (!detector) return;
+        setScoreLoading(true);
+        setScoreError('');
+        setScoreData([]); // Очищаем предыдущие данные
+        try {
+            const response = await axios.get(`/api/charts/anomaly_scores?detector_name=${detector}`);
+            if (Array.isArray(response.data)) {
+                setScoreData(response.data);
+            } else {
+                console.error("Unexpected score data format:", response.data);
+                setScoreError('Неверный формат данных скоров.');
+            }
+        } catch (err) { 
+            console.error(`Error fetching scores for ${detector}:`, err);
+            setScoreError(`Ошибка загрузки скоров для ${detector}. ${err.response?.data?.detail || err.message}`);
+        } finally {
+            setScoreLoading(false);
+        }
+    }, []);
+    // ------------------------------------
+
     // Загрузка всех данных при монтировании
     useEffect(() => {
         fetchDashboardData();
         fetchAnomalies();
         fetchActivityTimeline(); // Загружаем график активности (по дням по умолчанию)
         fetchAnomalySummary();   // Загружаем сводку аномалий
-    }, [fetchDashboardData, fetchAnomalies, fetchActivityTimeline, fetchAnomalySummary]);
+        // Загружаем скоры для детектора по умолчанию при монтировании
+        fetchScores(selectedDetector);
+    }, [fetchDashboardData, fetchAnomalies, fetchActivityTimeline, fetchAnomalySummary, fetchScores, selectedDetector]);
 
     // ВОЗВРАЩАЕМ логику Train Models с payload
     const handleTrainModels = async () => {
@@ -634,6 +669,15 @@ function DashboardPage() {
         console.log("Clicked Row ID:", params.row.id);
         handleOpenModal(params.row.id); // Open modal with the anomaly ID
     };
+
+    // --- Обработчик смены детектора --- 
+    const handleDetectorChange = (event) => {
+        const newDetector = event.target.value;
+        setSelectedDetector(newDetector);
+        // Загружаем данные для нового детектора (useEffect сделает это, т.к. selectedDetector изменился)
+        // fetchScores(newDetector); // Можно и так, но через useEffect надежнее
+    };
+    // ------------------------------------
 
     return (
         <Grid container spacing={3}>
@@ -877,6 +921,39 @@ function DashboardPage() {
                 loading={modalLoading} 
                 error={modalError} 
             />
+            
+            {/* --- График Распределения Скоров Аномальности --- */}
+            <Grid item xs={12} md={6}>
+                <Paper elevation={3} sx={{ p: 2, borderRadius: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                        <Typography variant="h6" gutterBottom sx={{ fontWeight: 'medium' }}>
+                            Распределение Оценок
+                        </Typography>
+                        <FormControl size="small" sx={{ minWidth: 200 }}>
+                            <InputLabel id="detector-select-label">Детектор</InputLabel>
+                            <Select
+                                labelId="detector-select-label"
+                                value={selectedDetector}
+                                label="Детектор"
+                                onChange={handleDetectorChange}
+                            >
+                                {/* Доступные детекторы для графика скоров */} 
+                                <MenuItem value={"isolation_forest"}>Isolation Forest</MenuItem>
+                                <MenuItem value={"autoencoder"}>Autoencoder</MenuItem>
+                                <MenuItem value={"statistical_zscore"}>Statistical (Z-Score)</MenuItem>
+                            </Select>
+                        </FormControl>
+                    </Box>
+                    {/* Вставляем компонент гистограммы */}
+                    <ScoreDistributionChart 
+                        scores={scoreData} 
+                        detectorName={selectedDetector} 
+                        isLoading={scoreLoading} 
+                        error={scoreError} 
+                    />
+                </Paper>
+            </Grid>
+            {/* ----------------------------------------------- */}
             
         </Grid>
     );

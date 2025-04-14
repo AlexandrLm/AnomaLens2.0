@@ -24,7 +24,8 @@ import {
     TableBody,
     TableCell,
     TableContainer,
-    TableRow
+    TableRow,
+    TablePagination
 } from '@mui/material';
 import { Search as SearchIcon, Close as CloseIcon } from '@mui/icons-material';
 import { format } from 'date-fns';
@@ -176,24 +177,38 @@ function ActivitiesPage() {
     const [error, setError] = useState('');
     const [searchTerm, setSearchTerm] = useState('');
     
+    // --- Состояние для пагинации --- 
+    const [page, setPage] = useState(0); // Номер страницы (начинается с 0)
+    const [rowsPerPage, setRowsPerPage] = useState(24); // Количество активностей на странице (кратно 12, 6, 4, 3)
+    const [totalCount, setTotalCount] = useState(0); // Общее количество активностей
+    // --------------------------------
+
     const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
     const [selectedActivity, setSelectedActivity] = useState(null);
 
-    // --- Функция загрузки данных (Улучшенная обработка ошибок) --- 
-    const fetchActivities = useCallback(async () => {
+    // --- Функция загрузки данных (с пагинацией) --- 
+    const fetchActivities = useCallback(async (currentPage, currentRowsPerPage) => {
         setLoading(true);
         setError('');
         try {
-            const response = await axios.get('/api/activities/?limit=1000');
-             if (Array.isArray(response?.data)) {
-                 if (response.data.length > 0) {
-                     console.log("Структура первой активности из API:", response.data[0]);
-                 }
-                setActivities(response.data);
+            // Рассчитываем skip
+            const skip = currentPage * currentRowsPerPage;
+            // Формируем URL с параметрами пагинации
+            const apiUrl = `/api/activities/?limit=${currentRowsPerPage}&skip=${skip}`;
+            console.log("Fetching activities from:", apiUrl); // Лог URL
+
+            const response = await axios.get(apiUrl);
+            
+            // Ожидаем объект { totalCount: number, data: array }
+            if (response?.data && typeof response.data.totalCount === 'number' && Array.isArray(response.data.data)) {
+                console.log(`Received ${response.data.data.length} activities, total count: ${response.data.totalCount}`);
+                setActivities(response.data.data);
+                setTotalCount(response.data.totalCount);
             } else {
-                 console.error('Received non-array data for activities:', response?.data);
-                 setError('Получен некорректный формат данных.');
+                 console.error('Received unexpected data structure for activities:', response?.data);
+                 setError('Получен некорректный формат данных от API.');
                  setActivities([]);
+                 setTotalCount(0);
             }
         } catch (err) {
             console.error("Error fetching activities:", err);
@@ -206,16 +221,34 @@ function ActivitiesPage() {
             } else if (err.message) errorMsg = err.message;
             setError(errorMsg);
             setActivities([]);
+            setTotalCount(0);
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, []); // Зависимости будут добавлены через useEffect
 
     useEffect(() => {
-        fetchActivities();
-    }, [fetchActivities]);
+        // Вызываем fetchActivities при монтировании и при изменении страницы или кол-ва строк
+        fetchActivities(page, rowsPerPage);
+    }, [fetchActivities, page, rowsPerPage]);
 
-    // --- Фильтрация активностей --- 
+    // --- Обработчики пагинации --- 
+    const handleChangePage = (event, newPage) => {
+      console.log("Changing page to:", newPage);
+      setPage(newPage);
+      // fetchActivities будет вызван из useEffect
+    };
+
+    const handleChangeRowsPerPage = (event) => {
+      const newRowsPerPage = parseInt(event.target.value, 10);
+      console.log("Changing rows per page to:", newRowsPerPage);
+      setRowsPerPage(newRowsPerPage);
+      setPage(0); // Сбрасываем на первую страницу при изменении кол-ва строк
+      // fetchActivities будет вызван из useEffect
+    };
+    // ----------------------------
+
+    // --- Фильтрация активностей (теперь фильтрует только на текущей странице) --- 
     const handleSearchChange = (event) => {
         setSearchTerm(event.target.value);
     };
@@ -304,6 +337,22 @@ function ActivitiesPage() {
                     </Grid>
                 )}
             </Box>
+
+            {/* Компонент пагинации */}
+            {!loading && !error && totalCount > 0 && (
+                <TablePagination
+                    component="div"
+                    count={totalCount} // Общее количество активностей
+                    page={page} // Текущая страница (0-based)
+                    onPageChange={handleChangePage} // Обработчик смены страницы
+                    rowsPerPage={rowsPerPage} // Количество строк на странице
+                    onRowsPerPageChange={handleChangeRowsPerPage} // Обработчик смены кол-ва строк
+                    rowsPerPageOptions={[12, 24, 48, 96]} // Варианты кол-ва строк
+                    labelRowsPerPage="Активностей на странице:"
+                    labelDisplayedRows={({ from, to, count }) => `${from}–${to} из ${count}`}
+                    sx={{ mt: 3, borderTop: '1px solid', borderColor: 'divider' }}
+                />
+            )}
 
             {/* === МОДАЛЬНОЕ ОКНО ДЕТАЛЕЙ АКТИВНОСТИ === */}
             <Dialog

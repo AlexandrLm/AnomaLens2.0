@@ -194,7 +194,7 @@ class AutoencoderDetector:
             print(f"Autoencoder currently only supports 'activity'. Skipping training for '{entity_type}'.")
             return
 
-        activities = crud.get_user_activities(db, limit=limit)
+        _total_count, activities = crud.get_user_activities(db, limit=limit)
         if not activities: print("Autoencoder: No activity data found for training."); return
 
         df_engineered = engineer_features(activities)
@@ -246,9 +246,8 @@ class AutoencoderDetector:
                  print("Failed to load model/scaler. Aborting detection.")
                  return []
 
-
-        activities = crud.get_user_activities(db, limit=limit)
-        if not activities: print("Autoencoder: No activity data found for detection."); return []
+        _total_count, activities = crud.get_user_activities(db, limit=limit)
+        if not activities: print("Autoencoder: No activity data to detect."); return []
 
         df_engineered = engineer_features(activities)
         if df_engineered is None: print("Autoencoder: Feature engineering failed."); return []
