@@ -23,6 +23,7 @@
 3.  **Создайте виртуальное окружение:**
     ```bash
     python -m venv backend/.venv
+    py -3.11 -m venv backend/.venv
     ```
 4.  **Активируйте виртуальное окружение:**
     *   Windows (PowerShell): `.\backend\.venv\Scripts\Activate.ps1`

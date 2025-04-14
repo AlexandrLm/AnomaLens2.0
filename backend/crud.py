@@ -294,6 +294,13 @@ def get_detected_anomalies(db: Session, skip: int = 0, limit: int = 100) -> List
     """
     return db.query(models.Anomaly)             .order_by(models.Anomaly.detection_timestamp.desc())             .offset(skip)             .limit(limit)             .all()
 
+# --- НОВАЯ ФУНКЦИЯ для получения одной аномалии ---
+def get_anomaly(db: Session, anomaly_id: int) -> Optional[models.Anomaly]:
+    """
+    Retrieves a single anomaly by its ID.
+    """
+    return db.query(models.Anomaly).filter(models.Anomaly.id == anomaly_id).first()
+
 # --- НОВАЯ ФУНКЦИЯ ---
 def delete_all_anomalies(db: Session) -> int:
     """

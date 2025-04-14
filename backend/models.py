@@ -93,6 +93,7 @@ class Anomaly(Base):
     severity = Column(String, nullable=True, index=True) # Например, 'low', 'medium', 'high'
     detector_name = Column(String, nullable=True) # Какой алгоритм обнаружил
     details = Column(JSON, nullable=True) # Дополнительные данные об аномалии (например, значение метрики)
+    anomaly_score = Column(Float, nullable=True) # Для хранения численной оценки аномальности
 
     # Можно добавить ForeignKey связи, если нужно жестко связать с entity_id
     # Например, order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)

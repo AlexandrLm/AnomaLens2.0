@@ -4,6 +4,7 @@ from faker import Faker
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 from decimal import Decimal
+import traceback
 
 from .. import crud, schemas, models
 
@@ -132,15 +133,15 @@ def generate_orders(db: Session, count: int, customers: List[models.Customer], p
 
         order_schema = schemas.OrderCreate(
             customer_id=customer.id,
-            items=order_items_create
+            items=[]
         )
 
         try:
-            # Передаем total_amount в CRUD функцию, если она это поддерживает
-            # Если нет, CRUD должен сам считать. Но для симуляции аномалии,
-            # нам НУЖНО передать аномальную сумму. Доработаем CRUD позже, если нужно.
-            # Пока создаем заказ стандартно, а потом ОБНОВИМ сумму, если аномальная.
-            created = crud.create_order(db, order=order_schema)
+            created = crud.create_order(
+                db=db, 
+                order=order_schema, 
+                items_data=order_items_create
+            )
             if is_anomalous_order and created:
                 created.total_amount = float(final_total) # Обновляем сумму на аномальную
                 db.add(created)
@@ -153,6 +154,7 @@ def generate_orders(db: Session, count: int, customers: List[models.Customer], p
             print(f"Skipped order creation due to error: {e}")
         except Exception as e:
             print(f"Unexpected error during order creation: {e}")
+            traceback.print_exc()
 
     print(f"Generated {len(created_orders)} orders. Attempted to generate {num_anomalous} anomalous amount orders.")
     return created_orders

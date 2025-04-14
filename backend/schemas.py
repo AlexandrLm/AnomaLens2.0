@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime # Нужно для created_at
 
 # ==================
@@ -147,24 +147,30 @@ class UserActivity(UserActivityBase):
 class AnomalyBase(BaseModel):
     entity_type: str # 'order', 'activity', etc.
     entity_id: int   # ID of the corresponding order or activity
-    description: str
+    description: str # Renamed from reason to description for clarity in DB
     severity: Optional[str] = None
     detector_name: Optional[str] = None
-    details: Optional[Dict[str, Any]] = None # Using Dict instead of dict
+    details: Optional[Dict[str, Any]] = None
+    anomaly_score: Optional[float] = None # Added anomaly_score here too
 
 class AnomalyCreate(AnomalyBase):
-    # All fields needed for creation are in AnomalyBase
+    # Inherits fields from AnomalyBase
     pass
 
-class Anomaly(AnomalyBase): # Schema for reading
+class Anomaly(AnomalyBase): # Schema for reading single Anomaly records
     id: int
     detection_timestamp: datetime
-    created_at: Optional[datetime] = None
+    # description field is inherited
     model_config = ConfigDict(from_attributes=True)
 
 # Обновляем зависимые схемы, если Pydantic не справился автоматически (обычно v2 справляется)
 # Customer.model_rebuild()
 # Product.model_rebuild()
+
+# --- Новая схема для детального ответа по аномалии ---
+class AnomalyDetailResponse(BaseModel):
+    anomaly: Anomaly # Данные самой аномалии
+    related_entity: Optional[Union[UserActivity, Order]] = None # Данные связанной сущности
 
 # --- Схемы для Параметров и Ответов API --- 
 
@@ -208,3 +214,34 @@ class SimulatorResponse(BaseModel):
     orders_added: int
     anomalous_activities_inserted: int
     anomalous_orders_inserted: int
+
+# --- Схема для информации от одного детектора (используется в ConsolidatedAnomaly) --- 
+class AnomalyDetectorInfo(BaseModel):
+    detector_name: str
+    anomaly_score: Optional[float] = None
+    severity: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    detection_timestamp: datetime 
+    # --- ДОБАВЛЕНО ПОЛЕ reason --- 
+    reason: Optional[str] = None # Это поле теперь будет включаться в ответ API
+    # ----------------------------
+
+    model_config = ConfigDict(from_attributes=True)
+
+# --- Схема для консолидированной аномалии --- 
+class ConsolidatedAnomaly(BaseModel):
+    entity_type: str
+    entity_id: int
+    last_detected_at: datetime
+    overall_severity: Optional[str] = None
+    detector_count: int
+    triggered_detectors: List[AnomalyDetectorInfo] # Эта схема теперь содержит reason
+
+# --- Обновляем схему ответа для эндпоинта GET / --- 
+# Вместо List[Anomaly] или AnomalyResponse, будем использовать List[ConsolidatedAnomaly]
+
+# --- Схемы для Деталей Аномалии (GET /{anomaly_id}) --- 
+# Их можно пока оставить без изменений, т.к. они запрашивают конкретную запись по ID
+class AnomalyDetailResponse(BaseModel):
+    anomaly: Anomaly 
+    related_entity: Optional[Union[UserActivity, Order]] = None

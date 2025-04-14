@@ -2,10 +2,18 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import {
     Typography, Paper, Grid, CircularProgress, Alert, Card, CardContent, Button,
-    Box, List, ListItem, ListItemText, Divider, Chip, Stack, useTheme, IconButton, ListItemIcon, Collapse
+    Box, List, ListItem, ListItemText, Divider, Chip, Stack, useTheme, IconButton, ListItemIcon, Collapse,
+    Dialog, DialogTitle, DialogContent, DialogActions, TableContainer, Table, TableBody, TableRow, TableCell, Link as MuiLink,
+    Accordion, AccordionSummary, AccordionDetails
 } from '@mui/material';
-import { Train, Search, ExpandLess, ExpandMore, ErrorOutline, CheckCircleOutline, Settings, WarningAmberOutlined, InfoOutlined } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
+import { 
+    Train, Search, ExpandLess, ExpandMore, ErrorOutline, CheckCircleOutline, Settings, WarningAmberOutlined, InfoOutlined,
+    Close as CloseIcon, Link as LinkIcon, BugReport, HistoryToggleOff,
+    ExpandMore as ExpandMoreIcon
+} from '@mui/icons-material';
+import { useNavigate, Link as RouterLink } from 'react-router-dom';
+import { format, parseISO } from 'date-fns';
+import { ru } from 'date-fns/locale';
 // ИМПОРТЫ ДЛЯ ГРАФИКОВ
 import {
     Chart as ChartJS,
@@ -69,6 +77,216 @@ const getAnomalySettings = () => {
     return defaults;
 };
 
+// --- Функция для получения цвета чипа серьезности ---
+const getSeverityChipColor = (severity) => {
+    const upperSeverity = severity?.toUpperCase();
+    if (upperSeverity === 'HIGH') return 'error';
+    if (upperSeverity === 'MEDIUM') return 'warning';
+    if (upperSeverity === 'LOW') return 'info';
+    return 'default';
+};
+
+// --- Компонент для отображения деталей аномалии в модальном окне ---
+// ТЕПЕРЬ принимает ConsolidatedAnomaly
+const AnomalyDetailsDialogContent = ({ anomaly }) => {
+    if (!anomaly) return null;
+
+    // Форматируем дату последнего обнаружения
+    let lastDetectedFormatted = 'N/A';
+    if (anomaly.last_detected_at) {
+        try {
+            // Даты из FastAPI обычно в ISO формате
+            lastDetectedFormatted = format(parseISO(anomaly.last_detected_at), 'dd.MM.yyyy HH:mm:ss', { locale: ru });
+        } catch (e) { console.error("Date format error:", e); }
+    }
+    
+    // Получаем цвет для общей серьезности
+    const overallSeverityColor = getSeverityChipColor(anomaly.overall_severity);
+
+    return (
+        <Box>
+            {/* --- Сводная информация --- */}
+            <Typography variant="subtitle1" gutterBottom>Общая информация</Typography>
+            <TableContainer component={Paper} elevation={0} variant="outlined" sx={{ mb: 2 }}>
+                <Table size="small">
+                    <TableBody>
+                        <TableRow><TableCell sx={{fontWeight: 'bold'}}>Тип Сущности:</TableCell><TableCell>{anomaly.entity_type}</TableCell></TableRow>
+                        <TableRow><TableCell sx={{fontWeight: 'bold'}}>ID Сущности:</TableCell><TableCell>{anomaly.entity_id}</TableCell></TableRow>
+                        <TableRow><TableCell sx={{fontWeight: 'bold'}}>Общая Серьезность:</TableCell><TableCell>
+                             <Chip 
+                                label={(anomaly.overall_severity || 'Unknown').toUpperCase()}
+                                color={overallSeverityColor}
+                                size="small"
+                            />
+                        </TableCell></TableRow>
+                        <TableRow><TableCell sx={{fontWeight: 'bold'}}>Кол-во Детекторов:</TableCell><TableCell>{anomaly.detector_count}</TableCell></TableRow>
+                        <TableRow><TableCell sx={{fontWeight: 'bold'}}>Время Обнаружения:</TableCell><TableCell>{lastDetectedFormatted}</TableCell></TableRow>
+                        {/* Добавляем ссылку на страницу сущности */}
+                        {(anomaly.entity_type === 'activity' || anomaly.entity_type === 'order') && (
+                             <TableRow>
+                                <TableCell colSpan={2} align="right">
+                                     <MuiLink component={RouterLink} 
+                                            to={`/${anomaly.entity_type}s?highlight=${anomaly.entity_id}`} 
+                                            underline="hover" 
+                                            target="_blank" // Открывать в новой вкладке
+                                            rel="noopener noreferrer"
+                                        > 
+                                         <LinkIcon fontSize="small" sx={{ verticalAlign: 'bottom', mr: 0.5 }} /> 
+                                         Перейти к {anomaly.entity_type === 'activity' ? 'активности' : 'заказу'}
+                                     </MuiLink>
+                                </TableCell>
+                             </TableRow>
+                        )}
+                    </TableBody>
+                </Table>
+            </TableContainer>
+
+            {/* --- Детали по каждому детектору (используем аккордеон) --- */}
+            <Typography variant="subtitle1" gutterBottom sx={{ mt: 3 }}>Сработавшие Детекторы</Typography>
+            {anomaly.triggered_detectors && anomaly.triggered_detectors.length > 0 ? (
+                anomaly.triggered_detectors
+                    // Сортируем для консистентности, например, по имени
+                    .sort((a, b) => a.detector_name.localeCompare(b.detector_name))
+                    .map((detectorInfo, index) => {
+                        let detectorTimeFormatted = 'N/A';
+                        if (detectorInfo.detection_timestamp) {
+                             try {
+                                detectorTimeFormatted = format(parseISO(detectorInfo.detection_timestamp), 'HH:mm:ss.SSS', { locale: ru });
+                             } catch {} 
+                        }
+                        const severityColor = getSeverityChipColor(detectorInfo.severity);
+
+                         // Форматируем details
+                         let detailsContent = null;
+                         if (detectorInfo.details !== null && detectorInfo.details !== undefined) {
+                            if (typeof detectorInfo.details === 'object') {
+                                detailsContent = (
+                                    <TableContainer component={Paper} elevation={0} variant="outlined" sx={{ mt: 1 }}>
+                                        <Table size="small">
+                                            <TableBody>
+                                                {Object.entries(detectorInfo.details).map(([key, value]) => (
+                                                    <TableRow key={key}>
+                                                        <TableCell sx={{fontWeight: 'bold', width: '40%', py: 0.5 }}>{String(key)}:</TableCell>
+                                                        <TableCell sx={{ py: 0.5 }}>{String(value)}</TableCell>
+                                                    </TableRow>
+                                                ))}
+                                            </TableBody>
+                                        </Table>
+                                    </TableContainer>
+                                );
+                            } else {
+                                detailsContent = (
+                                    <Paper elevation={0} variant="outlined" sx={{ p: 1, mt: 1, bgcolor: 'grey.50' }}>
+                                        <pre style={{ margin: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                            {String(detectorInfo.details)}
+                                        </pre>
+                                    </Paper>
+                                );
+                            }
+                        }
+
+                        return (
+                            <Accordion key={index} elevation={1} sx={{ mb: 1 }}>
+                                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                    <Stack direction="row" spacing={1.5} alignItems="center" sx={{ width: '100%' }}>
+                                        <Chip label={detectorInfo.detector_name} size="small" variant="outlined" />
+                                        <Chip label={detectorInfo.severity || 'N/A'} size="small" color={severityColor} />
+                                        {detectorInfo.anomaly_score !== null && (
+                                             <Chip label={`Score: ${detectorInfo.anomaly_score.toFixed(3)}`} size="small" variant="outlined" />
+                                        )}
+                                        <Box sx={{ flexGrow: 1 }} /> {/* Занимает оставшееся место */} 
+                                        <Typography variant="caption" color="text.secondary">{detectorTimeFormatted}</Typography>
+                                    </Stack>
+                                </AccordionSummary>
+                                <AccordionDetails sx={{ bgcolor: 'action.hover' }}>
+                                     <Typography variant="subtitle2" gutterBottom sx={{ color: 'text.secondary', mt: 1 }}>
+                                        Объяснение:
+                                     </Typography>
+                                     <Typography 
+                                        variant="body2" 
+                                        paragraph 
+                                        sx={{ 
+                                            fontStyle: 'italic', 
+                                            mb: 2, 
+                                            pl: 1.5, // Отступ слева
+                                            borderLeft: '3px solid', 
+                                            borderColor: 'divider' 
+                                        }}
+                                    >
+                                        {detectorInfo.reason || 'Объяснение не предоставлено.'} 
+                                    </Typography>
+                                    <Typography variant="subtitle2" gutterBottom>Детали Обнаружения:</Typography>
+                                    {detailsContent ? detailsContent : <Typography variant="body2" color="text.secondary">Нет деталей.</Typography>}
+                                </AccordionDetails>
+                            </Accordion>
+                        );
+                    })
+            ) : (
+                <Typography color="text.secondary">Нет информации по детекторам.</Typography>
+            )}
+        </Box>
+    );
+};
+
+// --- Anomaly Details Modal Component ---
+const AnomalyDetailsModal = ({ open, onClose, anomalyDetails, loading, error }) => {
+    // ... (imports, helper functions like getSeverityColor, formatTimestamp - no changes) ...
+
+    return (
+        <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+            {/* ... (DialogTitle, DialogContent start, Loading/Error handling) ... */}
+                {anomalyDetails && (
+                    <Box>
+                        {/* ... (Общая информация section - no changes) ... */}
+
+                        <Typography variant="h6" gutterBottom sx={{ mt: 3 }}>Сработавшие Детекторы</Typography>
+                        {anomalyDetails.detected_by && anomalyDetails.detected_by.map((detectorInfo, index) => (
+                            <Accordion key={index} defaultExpanded={index === 0}>
+                                <AccordionSummary
+                                    expandIcon={<ExpandMoreIcon />}
+                                    aria-controls={`panel${index}a-content`}
+                                    id={`panel${index}a-header`}
+                                >
+                                    {/* ... (AccordionSummary content - detector name, severity, timestamp - no changes) ... */}
+                                </AccordionSummary>
+                                <AccordionDetails>
+                                    {/* --- ДОБАВЛЕНО: Отображение Reason --- */} 
+                                    <Typography variant="subtitle2" gutterBottom sx={{ color: 'text.secondary', mt: 1 }}> 
+                                        Объяснение:
+                                    </Typography>
+                                    <Typography 
+                                        variant="body2" 
+                                        paragraph 
+                                        sx={{ 
+                                            fontStyle: 'italic', 
+                                            mb: 2, 
+                                            pl: 1, 
+                                            borderLeft: '3px solid', 
+                                            borderColor: 'divider' 
+                                        }}
+                                    >
+                                        {detectorInfo.reason || 'Объяснение не предоставлено.'} 
+                                    </Typography>
+                                    {/* ------------------------------------- */} 
+
+                                    <Typography variant="subtitle2" gutterBottom sx={{ color: 'text.secondary' }}>
+                                        Детали Обнаружения:
+                                    </Typography>
+                                    <Paper elevation={0} variant="outlined" sx={{ p: 1.5, bgcolor: 'grey.50' }}>
+                                        {/* ... (Mapping through detectorInfo.details - no changes) ... */}
+                                        {!detectorInfo.details && <Typography variant="body2">Детали отсутствуют.</Typography>}
+                                    </Paper>
+                                </AccordionDetails>
+                            </Accordion>
+                        ))}
+                        {/* ... (Handling no detectors) ... */}
+                    </Box>
+                )}
+            {/* ... (DialogContent end, DialogActions) ... */}
+        </Dialog>
+    );
+};
+
 function DashboardPage() {
     const theme = useTheme();
     const navigate = useNavigate();
@@ -116,6 +334,17 @@ function DashboardPage() {
     const [loadingAnomalySummary, setLoadingAnomalySummary] = useState(true);
     const [errorAnomalySummary, setErrorAnomalySummary] = useState('');
     // ---------------------------------------------------------
+
+    // --- NEW State for Anomaly Detail Modal ---
+    const [selectedAnomaly, setSelectedAnomaly] = useState(null);
+    const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+    // -----------------------------------------
+
+    // --- State for Modal ---
+    const [modalOpen, setModalOpen] = useState(false);
+    const [selectedAnomalyDetails, setSelectedAnomalyDetails] = useState(null);
+    const [modalLoading, setModalLoading] = useState(false);
+    const [modalError, setModalError] = useState('');
 
     // --- Подготовка данных и опций для графиков (используем useMemo) ---
     const activityTimelineChartData = useMemo(() => {
@@ -214,19 +443,26 @@ function DashboardPage() {
         }
     }, []);
 
-    // Функция для загрузки аномалий
-    const fetchAnomalies = useCallback(async (showLoader = true) => {
-        if (showLoader) setLoadingAnomalies(true);
-        setDetectError(''); // Clear previous detection errors on refresh
+    // --- Функция для ЗАГРУЗКИ КОНСОЛИДИРОВАННЫХ аномалий --- 
+    const fetchAnomalies = useCallback(async () => {
+        setLoadingAnomalies(true);
+        setErrorAnomalies('');
+        setAnomalies([]); // Очищаем перед загрузкой
         try {
-            const response = await axios.get('/api/anomalies/?limit=100'); // Fetch last 100
-            setAnomalies(response.data || []);
-        } catch (error) {
-            console.error("Error fetching anomalies:", error);
-            setDetectError('Не удалось загрузить список аномалий.');
-            setAnomalies([]);
+            // Используем тот же эндпоинт GET /
+            const response = await axios.get('/api/anomalies/', { params: { limit: 100 } }); // Запрашиваем первые 100 консолидированных
+            // Ожидаем List[ConsolidatedAnomaly]
+            if (Array.isArray(response?.data)) {
+                setAnomalies(response.data);
+            } else {
+                 console.error("Received non-array data for consolidated anomalies", response?.data);
+                 setErrorAnomalies("Некорректный формат данных аномалий.");
+            }
+        } catch (err) {
+            console.error("Error fetching anomalies:", err);
+            setErrorAnomalies(err.response?.data?.detail || 'Не удалось загрузить список аномалий.');
         } finally {
-            if (showLoader) setLoadingAnomalies(false);
+            setLoadingAnomalies(false);
         }
     }, []);
 
@@ -318,7 +554,7 @@ function DashboardPage() {
                 algorithms: ['statistical_zscore', 'isolation_forest', 'dbscan'],
             });
             setDetectionResult(response.data);
-            fetchAnomalies(false); // Refresh anomaly list without showing loader
+            fetchAnomalies(); // Перезагружаем список аномалий
         } catch (error) {
             console.error("Error detecting activity anomalies:", error);
             setDetectionError(error.response?.data?.detail || 'Ошибка при запуске поиска аномалий активностей.');
@@ -347,7 +583,7 @@ function DashboardPage() {
                 // Параметры DBSCAN не передаем, т.к. он не используется для заказов
             });
             setDetectionResult(response.data);
-            fetchAnomalies(false);
+            fetchAnomalies();
         } catch (error) {
             console.error("Error detecting order anomalies:", error);
             setDetectionError(error.response?.data?.detail || 'Ошибка при запуске поиска аномалий заказов.');
@@ -356,9 +592,17 @@ function DashboardPage() {
         }
     };
 
-    // Toggle anomaly details
-    const handleToggleAnomaly = (id) => {
-        setOpenAnomalyId(openAnomalyId === id ? null : id);
+    // --- Обработчик клика по строке аномалии --- 
+    // Теперь просто открывает модальное окно с уже загруженными данными
+    const handleToggleAnomaly = (anomaly) => {
+        setSelectedAnomaly(anomaly); // Сохраняем всю консолидированную аномалию
+        setIsDetailModalOpen(true);
+    };
+
+    // --- Закрытие модального окна (без изменений) --- 
+    const handleCloseDetailModal = () => {
+        setIsDetailModalOpen(false);
+        setSelectedAnomaly(null);
     };
 
     // Navigate to Settings page
@@ -368,6 +612,41 @@ function DashboardPage() {
 
     // Combined loading state for disabling buttons
     const isDetecting = loadingDetectActivity || loadingDetectOrder;
+
+    // --- Fetch Anomaly Details for Modal ---
+    const fetchAnomalyDetails = useCallback(async (anomalyId) => {
+        setModalLoading(true);
+        setModalError('');
+        setSelectedAnomalyDetails(null); // Clear previous details
+        try {
+            const response = await axios.get(`/api/anomalies/${anomalyId}`);
+            console.log("Anomaly Details Response:", response.data); // Log fetched details
+            setSelectedAnomalyDetails(response.data);
+        } catch (error) { // Explicitly catch the error
+            console.error("Error fetching anomaly details:", error);
+            setModalError(error.response?.data?.detail || error.message || 'Failed to fetch anomaly details');
+        }
+        setModalLoading(false);
+    }, []);
+
+    // --- Modal Handlers ---
+    const handleOpenModal = (anomalyId) => {
+        fetchAnomalyDetails(anomalyId);
+        setModalOpen(true);
+    };
+
+    const handleCloseModal = () => {
+        setModalOpen(false);
+        setSelectedAnomalyDetails(null); // Clear details on close
+        setModalError('');
+    };
+
+    // --- DataGrid Click Handler ---
+    const handleRowClick = (params) => {
+        // params.row contains the data of the clicked row
+        console.log("Clicked Row ID:", params.row.id);
+        handleOpenModal(params.row.id); // Open modal with the anomaly ID
+    };
 
     return (
         <Grid container spacing={3}>
@@ -514,141 +793,96 @@ function DashboardPage() {
 
                     {!loadingAnomalies && anomalies.length > 0 && (
                         <List sx={{ width: '100%', bgcolor: 'background.paper', mt: 2, borderRadius: 2, overflow: 'hidden' }}>
-                            {anomalies.map((anomaly) => {
-                                // Форматируем timestamp
-                                const detectionTime = anomaly.detected_at // Используем новое поле
-                                    ? new Date(anomaly.detected_at).toLocaleString()
-                                    : 'N/A';
+                            {anomalies.map((anomaly, index) => {
+                                const overallSeverityColor = getSeverityChipColor(anomaly.overall_severity);
                                 
-                                // Определяем цвет и иконку для severity
-                                let severityColor = 'default';
-                                let severityIcon = <CheckCircleOutline fontSize="small" />;
-                                const severityText = (anomaly.severity || 'Medium').toUpperCase();
-                                
-                                if (severityText === 'HIGH') {
-                                    severityColor = 'error';
-                                    severityIcon = <ErrorOutline fontSize="small" color="error" />;
-                                } else if (severityText === 'MEDIUM') {
-                                    severityColor = 'warning';
-                                    severityIcon = <WarningAmberOutlined fontSize="small" color="warning" />;
-                                } else if (severityText === 'LOW') {
-                                    severityColor = 'info';
-                                    severityIcon = <InfoOutlined fontSize="small" color="info" />;
-                                }
+                                let lastDetectedTime = 'N/A';
+                                try {
+                                    lastDetectedTime = format(parseISO(anomaly.last_detected_at), 'dd.MM HH:mm', { locale: ru });
+                                } catch {}
 
                                 let primaryText = (
-                                    <Stack direction="row" spacing={1} alignItems="center">
-                                         <Chip 
-                                            label={severityText}
-                                            color={severityColor}
+                                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap"> {/* flexWrap для переноса */} 
+                                        <Chip 
+                                            label={(anomaly.overall_severity || '-').toUpperCase()}
+                                            color={overallSeverityColor}
                                             size="small"
-                                            icon={severityIcon}
-                                            sx={{ fontWeight: 500, height: 22, '.MuiChip-label': { fontSize: '0.75rem' } }}
+                                            sx={{ mr: 1 }}
                                         />
-                                        <Typography variant="body2" component="span">
-                                            {`${anomaly.detector_name} | ${anomaly.entity_type.toUpperCase()} ID: ${anomaly.entity_id} | ${detectionTime}`}
+                                        <Typography variant="body2" component="span" sx={{ mr: 1, fontWeight: 'medium' }}>
+                                            {anomaly.entity_type.toUpperCase()} ID: {anomaly.entity_id}
                                         </Typography>
+                                        <Chip 
+                                            icon={<BugReport fontSize="small" />} 
+                                            label={`${anomaly.detector_count}`}
+                                            size="small"
+                                            variant="outlined"
+                                            title="Количество сработавших детекторов"
+                                            sx={{ mr: 1 }}
+                                        />
+                                        {/* Список детекторов */} 
+                                        {anomaly.triggered_detectors.slice(0, 3).map(d => ( // Показываем первые 3
+                                            <Chip key={d.detector_name} label={d.detector_name} size="small" variant='outlined' sx={{ height: 20, fontSize: '0.7rem', mr: 0.5 }} />
+                                        ))}
+                                        {anomaly.detector_count > 3 && <Chip label={`+${anomaly.detector_count - 3}`} size="small" sx={{ height: 20, fontSize: '0.7rem' }}/>}
                                     </Stack>
                                 );
 
-                                // Парсим детали для улучшения отображения
-                                let detailsContent = null;
-                                try {
-                                    if (anomaly.details) {
-                                        const detailsObj = typeof anomaly.details === 'string' 
-                                                            ? JSON.parse(anomaly.details) 
-                                                            : anomaly.details; // Already an object
-
-                                        // Форматируем детали
-                                        detailsContent = (
-                                            <List dense disablePadding sx={{ pl: 2 }}>
-                                                {Object.entries(detailsObj).map(([key, value]) => {
-                                                    let displayValue = value;
-                                                    if (typeof value === 'object' && value !== null) {
-                                                         displayValue = <pre style={{ margin: 0, fontSize: '0.75rem' }}>{JSON.stringify(value, null, 2)}</pre>;
-                                                    } else if (typeof value === 'number') {
-                                                        displayValue = value.toFixed(4);
-                                                    }
-
-                                                    return (
-                                                        <ListItem key={key} sx={{ pl: 0, pr: 0, pt: 0.5, pb: 0.5 }}>
-                                                            <ListItemText 
-                                                                primaryTypographyProps={{ variant: 'caption', fontWeight: 'bold' }} 
-                                                                primary={`${key}:`}
-                                                                secondaryTypographyProps={{ variant: 'caption', component: 'div', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
-                                                                secondary={displayValue}
-                                                                sx={{ m: 0 }}
-                                                            />
-                                                        </ListItem>
-                                                    );
-                                                })}
-                                            </List>
-                                        );
-                                    } else {
-                                         detailsContent = <Typography variant="caption">Детали отсутствуют.</Typography>;
-                                    }
-                                } catch (e) {
-                                    console.error("Error parsing anomaly details:", e, anomaly.details);
-                                    detailsContent = <Typography variant="caption" color="error">Ошибка отображения деталей.</Typography>;
-                                    if (anomaly.details) {
-                                         detailsContent = (
-                                            <>
-                                                {detailsContent}
-                                                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: '0.75rem', marginTop: '4px' }}>
-                                                    {typeof anomaly.details === 'string' ? anomaly.details : JSON.stringify(anomaly.details, null, 2)}
-                                                </pre>
-                                            </>
-                                         )
-                                    }
-                                }
-
                                 return (
-                                    <React.Fragment key={anomaly.id}>
-                                        <ListItem 
-                                            button 
-                                            onClick={() => handleToggleAnomaly(anomaly.id)} 
-                                            sx={{
-                                                borderBottom: '1px solid', 
-                                                borderColor: 'divider', 
-                                                alignItems: 'center', // Center vertically
-                                                py: 1.5
-                                            }}
-                                        >
-                                            {/* Убираем отдельную иконку - она теперь в Chip */}
-                                            {/* <ListItemIcon sx={{ mt: '6px' }}> */}
-                                                {/* {severityIcon} */}
-                                            {/* </ListItemIcon> */}
-                                            <ListItemText
-                                                primary={primaryText} // Теперь это Stack с Chip и текстом
-                                                // Убираем secondary, т.к. время уже в primary
-                                                // secondary={...} 
-                                            />
-                                            <Box sx={{ display: 'flex', alignItems: 'center', ml: 1 }}>
-                                                {/* Добавляем Score */} 
-                                                <Chip 
-                                                    label={`Score: ${anomaly.anomaly_score?.toFixed(3) ?? 'N/A'}`}
-                                                    size="small"
-                                                    variant="outlined"
-                                                    sx={{ height: 20, fontSize: '0.7rem' }}
-                                                />
-                                                <IconButton size="small" sx={{ ml: 0.5 }}>
-                                                    {openAnomalyId === anomaly.id ? <ExpandLess /> : <ExpandMore />}
-                                                </IconButton>
-                                            </Box>
-                                        </ListItem>
-                                        <Collapse in={openAnomalyId === anomaly.id} timeout="auto" unmountOnExit>
-                                            <Box sx={{ pl: 4, pr: 2, py: 2, bgcolor: (theme) => alpha(theme.palette.grey[100], 0.5) }}>
-                                                <Typography variant="body2" gutterBottom sx={{ fontWeight: 'bold' }}>Детали:</Typography>
-                                                {detailsContent} {/* Отображаем отформатированные детали */}
-                                            </Box>
-                                        </Collapse>
-                                    </React.Fragment>
+                                    <ListItem 
+                                        key={`${anomaly.entity_type}-${anomaly.entity_id}-${index}`} // Генерируем ключ
+                                        button 
+                                        onClick={() => handleToggleAnomaly(anomaly)} // Открывает окно с ConsolidatedAnomaly
+                                        sx={{ borderBottom: '1px solid', borderColor: 'divider', alignItems: 'center', py: 1.5 }}
+                                    >
+                                        <ListItemText 
+                                            primary={primaryText} 
+                                            secondary={`Последнее обнаружение: ${lastDetectedTime}`} 
+                                            secondaryTypographyProps={{ variant: 'caption', sx: { mt: 0.5 } }}
+                                        />
+                                        <IconButton size="small" sx={{ ml: 1 }} aria-label="view details">
+                                            <Search fontSize="small" /> 
+                                        </IconButton>
+                                    </ListItem>
                                 );
                             })}
                         </List>
                     )}
                 </Paper>
             </Grid>
+            
+            {/* --- ОБНОВЛЕННОЕ Модальное Окно Деталей --- */}
+            <Dialog 
+                open={isDetailModalOpen} 
+                onClose={handleCloseDetailModal} 
+                maxWidth="lg" 
+                fullWidth
+                aria-labelledby="anomaly-detail-title"
+            >
+                <DialogTitle id="anomaly-detail-title">
+                    {/* Заголовок теперь содержит entity_type и entity_id */} 
+                    Детали Аномалии: {selectedAnomaly?.entity_type?.toUpperCase()} ID {selectedAnomaly?.entity_id ?? ''}
+                    <IconButton /* ... кнопка закрытия ... */ > <CloseIcon /> </IconButton>
+                </DialogTitle>
+                <DialogContent dividers>
+                    {/* Используем новый компонент контента */} 
+                    {selectedAnomaly && <AnomalyDetailsDialogContent anomaly={selectedAnomaly} />}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={handleCloseDetailModal}>Закрыть</Button>
+                </DialogActions>
+            </Dialog>
+            {/* --------------------------------------------- */}
+            
+            {/* Anomaly Details Modal Render */} 
+            <AnomalyDetailsModal 
+                open={modalOpen} 
+                onClose={handleCloseModal} 
+                anomalyDetails={selectedAnomalyDetails} 
+                loading={modalLoading} 
+                error={modalError} 
+            />
+            
         </Grid>
     );
 }

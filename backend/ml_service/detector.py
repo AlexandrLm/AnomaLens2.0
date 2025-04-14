@@ -341,87 +341,73 @@ class IsolationForestDetector:
 
     def detect(self, db: Session, entity_type: str, limit: int) -> List[Dict[str, Any]]:
         """
-        Обнаруживает аномалии с использованием обученной модели Isolation Forest.
+        Обнаруживает аномалии в новых данных, используя обученную модель.
         Возвращает список словарей с информацией об аномалиях, включая severity.
         """
-        print(f"Starting Isolation Forest detection for '{entity_type}'...")
-        if self.model is None:
-            print("Isolation Forest model not loaded. Cannot detect.")
-            return []
-        if entity_type != 'activity':
-            print(f"Isolation Forest detector currently only supports 'activity'. Skipping for '{entity_type}'.")
+        print("IF Detector: Starting detection...")
+        if not self.model or not self.scaler or not self.feature_names:
+            print("IF Detector: Model or scaler or features not loaded/trained. Cannot detect.")
             return []
 
-        activities = crud.get_user_activities(db, skip=0, limit=limit)
+        activities = crud.get_user_activities(db, limit=limit)
         if not activities:
-            print("No activity data found for Isolation Forest detection.")
+            print("IF Detector: No activities found for detection.")
             return []
 
-        df_engineered = engineer_features(activities)
-        if df_engineered is None or df_engineered.empty:
-            print("Feature engineering failed or returned empty DataFrame.")
+        df = engineer_features(activities)
+        if df is None or df.empty:
+            print("IF Detector: Feature engineering returned empty DataFrame.")
             return []
 
-        df_features = self._prepare_features(df_engineered)
-        if df_features is None or df_features.empty:
-            print("Feature preparation failed or returned empty DataFrame.")
+        # Подготовка признаков (OHE + Масштабирование) как при обучении
+        X = self._prepare_features(df, is_training=False)
+        if X is None:
+            print("IF Detector: Feature preparation failed during detection.")
             return []
 
-        # Убедимся, что колонки совпадают с теми, на которых обучались
-        if set(self.feature_names) != set(df_features.columns):
-            print("Warning: Feature mismatch between training and detection.")
-            # Попробуем привести к нужному набору колонок
-            missing_cols = list(set(self.feature_names) - set(df_features.columns))
-            extra_cols = list(set(df_features.columns) - set(self.feature_names))
-            print(f"  Missing columns: {missing_cols}")
-            print(f"  Extra columns: {extra_cols}")
-            for col in missing_cols:
-                df_features[col] = 0 # Добавляем недостающие с нулями
-            df_features = df_features[self.feature_names] # Оставляем только нужные и в правильном порядке
-            print("  Adjusted columns for detection.")
-
+        # --- Выполняем предсказание ---
         try:
-            # decision_function возвращает anomaly score
-            scores = self.model.decision_function(df_features)
-            # predict возвращает -1 для аномалий, 1 для нормальных
-            predictions = self.model.predict(df_features)
+            # scores: чем меньше, тем более аномально (ближе к -1)
+            # predict: 1 - норма, -1 - аномалия (согласно contamination)
+            scores = self.model.decision_function(X) # Anomaly scores
+            predictions = self.model.predict(X) # Anomaly labels (1 or -1)
+            print(f"IF Detector: Prediction completed. Found {sum(predictions == -1)} potential anomalies based on contamination.")
         except Exception as e:
-            print(f"Error during Isolation Forest prediction: {e}")
+            print(f"IF Detector: Error during prediction: {e}")
             return []
 
+        # --- Формируем результат ---
         anomalies = []
-        anomaly_indices = df_features.index[predictions == -1]
+        anomaly_indices = np.where(predictions == -1)[0] # Индексы аномалий
 
-        print(f"Isolation Forest raw scores calculated. Found {len(anomaly_indices)} potential anomalies.")
+        for idx in anomaly_indices:
+            activity_id = df.iloc[idx]['id']
+            current_score = scores[idx]
 
-        for index in anomaly_indices:
-            original_activity_id = df_engineered.loc[index, 'id']
-            anomaly_score = scores[index]
+            # --- ОПРЕДЕЛЕНИЕ СЕРЬЕЗНОСТИ ---
+            severity = "Low" # Default
+            if current_score <= -0.1:
+                 severity = "High"
+            elif current_score <= 0.05:
+                 severity = "Medium"
+            # -----------------------------
 
-            # Определение уровня серьезности на основе anomaly score
-            # Чем score ниже (больше отрицательное значение), тем выше серьезность
-            # Пороги подбираются экспериментально
-            severity = "Low"
-            if anomaly_score < -0.1: # Примерный порог для Medium
-                severity = "Medium"
-            if anomaly_score < -0.25: # Примерный порог для High
-                severity = "High"
+            # --- УЛУЧШЕНО: Формирование Reason --- 
+            reason_str = (
+                f"Point easily isolated by the model (score: {current_score:.4f}), indicating it differs from the majority based on its features. "
+                f"Scores closer to -1 are more anomalous, closer to 1 are normal."
+            )
+            # ------------------------------------
 
             anomaly_info = {
-                "detector_name": "isolation_forest",
-                "entity_type": entity_type,
-                "entity_id": int(original_activity_id),
-                "anomaly_score": float(anomaly_score),
-                "severity": severity, # <-- Добавили серьезность
-                "details": {
-                    # Можно добавить сюда значения признаков, если нужно
-                    # feature_values = df_features.loc[index].to_dict()
-                }
+                "activity_id": activity_id,
+                "reason": reason_str, # <--- Используем улучшенный reason
+                "details": {"anomaly_score": float(current_score)},
+                "severity": severity # <--- Добавляем серьезность
             }
             anomalies.append(anomaly_info)
-            # print(f"    Anomaly detected: ID={original_activity_id}, Score={anomaly_score:.4f}, Severity={severity}")
 
-        print(f"Isolation Forest detection finished. Anomalies prepared: {len(anomalies)}")
+        print(f"IF Detector: Formatted {len(anomalies)} anomalies.")
         return anomalies
 
 # --- Детектор: Статистический (Z-score) ---
@@ -561,269 +547,262 @@ class StatisticalDetector:
             print(data[feature_columns].dtypes)
 
 
-    def detect(self, db: Session, entity_type: str, limit: int = 10000) -> List[Dict[str, Any]]:
+    def detect(self, db: Session, entity_type: str, limit: int) -> List[Dict[str, Any]]:
         """
-        Обнаруживает аномалии в данных, используя сохраненную статистику.
+        Обнаруживает аномалии на основе Z-score.
         Возвращает список словарей с информацией об аномалиях, включая severity.
         """
-        print(f"Starting statistical detection for '{entity_type}'...")
-        anomalies = []
-        entity_stats = self.stats.get(entity_type)
-
-        if not entity_stats:
-            print(f"No statistics found for '{entity_type}'. Cannot perform detection. Please train first.")
-            return []
-
-        data = None
-        feature_columns = list(entity_stats.keys()) # Колонки, для которых есть статистика
-        id_column = 'id' # Имя колонки с ID
+        print(f"Statistical Detector ({entity_type}): Starting detection...")
+        df = None
+        feature_to_check = None
+        id_field = 'id' # Default id field
 
         if entity_type == 'activity':
-            activities = crud.get_user_activities(db, skip=0, limit=limit)
-            if not activities: return []
-            df_features = engineer_features(activities)
-            if df_features is None or df_features.empty:
-                 print("Feature engineering failed or returned empty DataFrame for activity detection.")
-                 return []
-            data = df_features
-            # Убедимся, что все нужные колонки есть
-            feature_columns = [col for col in feature_columns if col in data.columns]
+            data = crud.get_user_activities(db, limit=limit)
+            # Define the primary feature to check for anomalies in activities
+            feature_to_check = "time_since_last_activity_ip" # Or another key engineered feature
+            if not data:
+                 print(f"Statistical Detector ({entity_type}): No data found."); return []
+            # Feature Engineering для активностей
+            df = engineer_features(data)
+            if df is None or df.empty:
+                print(f"Statistical Detector ({entity_type}): Feature eng. failed or returned empty."); return []
 
         elif entity_type == 'order':
-            orders = crud.get_orders(db, skip=0, limit=limit)
-            if not orders: return []
-            order_data = [{
-                'id': order.id,
-                'customer_id': order.customer_id,
-                'created_at': pd.to_datetime(order.created_at),
-                'total_amount': order.total_amount,
-                'item_count': len(order.items)
-            } for order in orders]
-            df_orders = pd.DataFrame(order_data)
-            if df_orders.empty:
-                print("DataFrame creation failed or returned empty for order detection.")
-                return []
-            data = df_orders
-            id_column = 'id' # В данном случае совпадает
-            # Убедимся, что все нужные колонки есть
-            feature_columns = [col for col in feature_columns if col in data.columns]
+            data = crud.get_orders(db, limit=limit)
+            # Define the primary feature to check for anomalies in orders
+            feature_to_check = "total_amount"
+            if not data:
+                 print(f"Statistical Detector ({entity_type}): No data found."); return []
+            # Преобразуем заказы в DataFrame
+            order_list = [o.__dict__ for o in data] # Use __dict__ or a custom method if needed
+            df = pd.DataFrame(order_list)
+            # Ensure required columns exist after potential __dict__ conversion issues
+            if 'id' in df.columns: df.rename(columns={'id': 'order_id'}, inplace=True) # Example rename if needed
+            id_field = 'order_id' # ID field for orders
+            if df.empty:
+                 print(f"Statistical Detector ({entity_type}): DataFrame empty."); return []
         else:
-            print(f"Unsupported entity_type '{entity_type}' for statistical detection.")
+            raise ValueError(f"Unsupported entity_type for StatisticalDetector: {entity_type}")
+
+        # --- ИСПРАВЛЕНО: Загрузка и использование статистики ---
+        # 1. Убедимся, что статистика для entity_type загружена (или пытаемся загрузить снова)
+        if entity_type not in self.stats:
+            print(f"Stats for {entity_type} not pre-loaded. Attempting load now.")
+            self._load_stats(entity_type) # Load stats for the specific entity type
+
+        # 2. Проверяем наличие статистики и нужной колонки
+        if entity_type not in self.stats:
+             print(f"Statistical Detector ({entity_type}): Stats failed to load. Cannot detect.")
+             return []
+        if feature_to_check not in self.stats[entity_type]:
+            print(f"Statistical Detector ({entity_type}): Stats not available for feature '{feature_to_check}'. Cannot detect.")
             return []
+        if feature_to_check not in df.columns:
+             print(f"Statistical Detector ({entity_type}): Feature '{feature_to_check}' not found in DataFrame after processing. Cannot detect.")
+             return []
 
-        if data is None or data.empty or not feature_columns:
-            print(f"Insufficient data or features for detection for '{entity_type}'.")
-            return []
+        # 3. Получаем mean и std из загруженной статистики
+        stats_for_feature = self.stats[entity_type][feature_to_check]
+        mean = stats_for_feature.get('mean')
+        std = stats_for_feature.get('std')
 
-        print(f"Detecting anomalies using Z-score (threshold={self.z_threshold}) for columns: {feature_columns}")
+        # 4. Проверяем валидность mean и std
+        if mean is None or std is None or std == 0 or pd.isna(mean) or pd.isna(std):
+             print(f"Statistical Detector ({entity_type}): Invalid stats (mean={mean}, std={std}) for '{feature_to_check}'. Cannot detect.")
+             return []
+        # -------------------------------------------------------
 
-        for col in feature_columns:
-            if col not in data.columns:
-                print(f"  Warning: Column '{col}' not found in detection data. Skipping.")
-                continue
+        print(f"Statistical Detector ({entity_type}): Using stats for '{feature_to_check}': mean={mean:.2f}, std={std:.2f}, z_threshold={self.z_threshold}")
 
-            mean_val = entity_stats[col]['mean']
-            std_val = entity_stats[col]['std']
+        anomalies = []
+        try:
+            # Убедимся, что колонка числовая перед расчетом
+            if not pd.api.types.is_numeric_dtype(df[feature_to_check]):
+                print(f"Warning: Column '{feature_to_check}' is not numeric. Attempting conversion.")
+                df[feature_to_check] = pd.to_numeric(df[feature_to_check], errors='coerce')
+                df.dropna(subset=[feature_to_check], inplace=True) # Удаляем строки, где конвертация не удалась
 
-            if std_val == 0: # Пропускаем, если стандартное отклонение 0
-                print(f"  Warning: Standard deviation for '{col}' is 0. Skipping z-score calculation.")
-                continue
+            if df.empty:
+                print(f"Statistical Detector ({entity_type}): DataFrame is empty after numeric conversion/dropna for '{feature_to_check}'.")
+                return []
 
-            # Рассчитываем Z-score
-            z_scores = (data[col] - mean_val) / std_val
-            # Находим аномальные индексы
-            anomaly_indices = data[np.abs(z_scores) > self.z_threshold].index
+            z_scores = (df[feature_to_check] - mean) / std
+            potential_anomaly_indices = df.index[np.abs(z_scores) >= self.z_threshold]
 
-            print(f"  Found {len(anomaly_indices)} potential anomalies for column '{col}'")
+            print(f"Statistical Detector ({entity_type}): Found {len(potential_anomaly_indices)} potential anomalies based on z-score >= {self.z_threshold}.")
+            # --- ДОБАВЛЕН ЛОГ: Вывод распределения Z-score перед фильтрацией ---
+            print(f"Statistical Detector ({entity_type}): Z-score distribution summary:\n{z_scores.describe()}")
+            # ------------------------------------------------------------------
 
-            for index in anomaly_indices:
-                entity_id = data.loc[index, id_column]
-                actual_value = data.loc[index, col]
-                anomaly_z_score = z_scores.loc[index]
+            for idx in potential_anomaly_indices:
+                row = df.loc[idx]
+                entity_id = row[id_field]
+                current_z = z_scores.loc[idx]
+                current_value = row[feature_to_check]
 
-                # Определение уровня серьезности на основе Z-Score
-                severity = "Low"
-                if abs(anomaly_z_score) > self.z_threshold * 1.5: # Например, в 1.5 раза выше порога
-                    severity = "Medium"
-                if abs(anomaly_z_score) > self.z_threshold * 2.5: # Например, в 2.5 раза выше порога
+                # Определение Severity (логика без изменений)
+                severity = "Medium"
+                if abs(current_z) >= self.z_threshold * 1.5:
                     severity = "High"
+                elif abs(current_z) >= self.z_threshold:
+                    severity = "Medium"
+
+                # --- УЛУЧШЕНО: Формирование Reason --- 
+                reason_str = (
+                    f"Value of '{feature_to_check}' ({current_value:.4f}) deviates significantly from the mean ({mean:.4f}). "
+                    f"Z-score = {current_z:.2f}, which is {('above' if current_z > 0 else 'below')} the threshold of {self.z_threshold}. "
+                    f"(std={std:.4f})"
+                )
+                # ------------------------------------
 
                 anomaly_info = {
-                    "detector_name": "statistical_zscore",
                     "entity_type": entity_type,
-                    "entity_id": int(entity_id), # Убедимся, что ID - это int
-                    "anomaly_score": float(abs(anomaly_z_score)), # Используем абсолютное значение Z-Score как score
-                    "severity": severity, # <-- Добавили серьезность
+                    "entity_id": int(entity_id),
+                    "reason": reason_str, # <--- Используем улучшенный reason
                     "details": {
-                        "feature": col,
-                        "value": float(actual_value),
-                        "mean": float(mean_val),
-                        "std_dev": float(std_val),
-                        "z_score": float(anomaly_z_score),
-                        "threshold": self.z_threshold
-                    }
+                        "feature": feature_to_check,
+                        "value": float(current_value),
+                        "mean": float(mean),
+                        "std": float(std),
+                        "z_score": float(current_z)
+                    },
+                    "severity": severity,
+                    "anomaly_score": float(abs(current_z))
                 }
-                anomalies.append(anomaly_info)
-                # print(f"    Anomaly detected: ID={entity_id}, Feature='{col}', Value={actual_value:.2f}, Z-Score={anomaly_z_score:.2f}, Severity={severity}")
+                if entity_type == 'activity': anomaly_info['activity_id'] = int(entity_id)
+                elif entity_type == 'order': anomaly_info['order_id'] = int(entity_id)
 
-        print(f"Statistical detection finished. Total anomalies found: {len(anomalies)}")
+                anomalies.append(anomaly_info)
+
+        except KeyError as e:
+            print(f"Statistical Detector ({entity_type}): KeyError during Z-score calculation or row access: {e}. Check if '{feature_to_check}' or '{id_field}' exists.")
+            # print(f"DataFrame columns: {df.columns.tolist()}") # Раскомментировать для отладки
+            return []
+        except Exception as e:
+            print(f"Statistical Detector ({entity_type}): Error during Z-score calculation/anomaly formatting: {e}")
+            # import traceback
+            # traceback.print_exc() # Раскомментировать для детальной отладки
+            return []
+
+        print(f"Statistical Detector ({entity_type}): Formatted {len(anomalies)} anomalies.")
         return anomalies
 
 # --- Детектор: DBSCAN ---
 class DbscanDetector:
-    # Параметры DBSCAN нужно подбирать, это просто примерные значения
-    # eps: Макс. расстояние между образцами для одного соседства.
-    # min_samples: Кол-во образцов в окрестности точки, чтобы считать ее основной.
-    def __init__(self, eps=0.5, min_samples=5):
-         self.eps = eps
-         self.min_samples = min_samples
-         self.scaler = StandardScaler() # DBSCAN чувствителен к масштабу
-         self.feature_names: List[str] = [] # Признаки, на которых обучался скейлер
-         self.ohe_categories: Dict[str, List[Any]] = {} # OHE категории
+    """Обнаруживает аномалии с помощью DBSCAN (шумовые точки)."""
 
-    # DBSCAN не требует явного сохранения модели, но скейлер и признаки - да.
-    # Можно использовать ту же логику, что и в IF, или передавать их при детекции.
-    # Для простоты, будем переобучать скейлер каждый раз перед detect.
-    # Это менее эффективно, но проще в реализации без сохранения состояния скейлера.
-
-    def train(self, db: Session, entity_type: str, limit: int):
-         # Обучение не требуется для DBSCAN, но можем использовать для fit скейлера, если хотим
-         # Пока оставляем пустым, но с новой сигнатурой
-         print(f"DBSCAN Training: Not implemented/needed for entity '{entity_type}'. Skipping.")
-         pass
+    # ИСПРАВЛЕНО: Принимаем eps и min_samples в __init__
+    def __init__(self, eps: float = 0.5, min_samples: int = 5):
+        self.eps = eps
+        self.min_samples = min_samples
+        self.scaler = StandardScaler() # Масштабировщик для DBSCAN
+        # Атрибуты для хранения информации об обучении (хотя DBSCAN не "обучается")
+        self.feature_names: List[str] = []
+        self.ohe_categories: Dict[str, List[Any]] = {}
+        print(f"Creating DbscanDetector with eps={self.eps}, min_samples={self.min_samples}") # Лог параметров
 
     def _prepare_features(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
-        """
-        Подготавливает признаки для DBSCAN, включая One-Hot Encoding.
-        Возвращает DataFrame только с числовыми и OHE признаками.
-        """
-        if df is None or df.empty:
+        """Готовит признаки для DBSCAN: OHE + Scaling."""
+        print("Preparing features for DBSCAN...")
+        # 1. OHE для категориального признака
+        try:
+            ohe_df = pd.get_dummies(df[[CATEGORICAL_FEATURE]], prefix=CATEGORICAL_FEATURE, dummy_na=False)
+            self.ohe_categories[CATEGORICAL_FEATURE] = ohe_df.columns.tolist() # Просто запоминаем использованные
+            print(f"  Applied One-Hot Encoding for '{CATEGORICAL_FEATURE}'. New columns: {ohe_df.columns.tolist()}")
+        except KeyError:
+             print(f"Warning: Categorical feature '{CATEGORICAL_FEATURE}' not found for OHE.")
+             ohe_df = pd.DataFrame(index=df.index) # Создаем пустой DF, если категории нет
+        except Exception as e:
+            print(f"Error during OHE: {e}")
             return None
 
-        print("Preparing features for DBSCAN...")
-        # Выбираем числовые признаки, которые есть в DataFrame
-        numerical_cols = [col for col in NUMERICAL_FEATURES if col in df.columns]
-        features = df[numerical_cols].copy()
+        # 2. Выбор и масштабирование числовых признаков
+        num_features_available = [f for f in NUMERICAL_FEATURES if f in df.columns]
+        if not num_features_available: print("No numerical features found for scaling."); return None
+        numeric_df = df[num_features_available].copy().fillna(0) # Заполняем NaN перед масштабированием
 
-        # Применяем One-Hot Encoding к категориальному признаку
-        if CATEGORICAL_FEATURE in df.columns:
-            try:
-                ohe_df = pd.get_dummies(df[CATEGORICAL_FEATURE], prefix=CATEGORICAL_FEATURE, dummy_na=False)
-                # Важно: используем df.index для соединения, чтобы сохранить соответствие строк
-                features = features.join(ohe_df)
-                print(f"  Applied One-Hot Encoding for '{CATEGORICAL_FEATURE}'. New columns: {list(ohe_df.columns)}")
-            except Exception as e:
-                print(f"Error during One-Hot Encoding for DBSCAN: {e}")
-                # В случае ошибки OHE, продолжаем только с числовыми
-        else:
-            print(f"  Categorical feature '{CATEGORICAL_FEATURE}' not found. Using only numerical features.")
+        try:
+            scaled_numeric = self.scaler.fit_transform(numeric_df) # Обучаем и применяем scaler
+            scaled_numeric_df = pd.DataFrame(scaled_numeric, columns=num_features_available, index=df.index)
+            self.feature_names = num_features_available + self.ohe_categories.get(CATEGORICAL_FEATURE, []) # Сохраняем имена всех признаков
+        except Exception as e:
+            print(f"Error during scaling: {e}")
+            return None
 
-        # Заполняем пропуски нулями (важно перед масштабированием)
-        features = features.fillna(0.0)
-
-        # Просто возвращаем признаки до масштабирования
-        print(f"Prepared {len(features.columns)} features for DBSCAN (before scaling).")
-        return features
+        # 3. Объединение признаков
+        final_df = pd.concat([scaled_numeric_df, ohe_df], axis=1)
+        print(f"Prepared {len(final_df.columns)} features for DBSCAN (before scaling).")
+        return final_df
 
     def detect(self, db: Session, entity_type: str, limit: int) -> List[Dict[str, Any]]:
-        """
-        Обнаруживает аномалии как выбросы с помощью DBSCAN.
-        Возвращает список словарей с информацией об аномалиях, включая severity.
-        Масштабирование выполняется внутри этого метода.
-        """
-        print(f"Starting DBSCAN detection for '{entity_type}'...")
+        print(f"DBSCAN Detector: Starting detection for {entity_type}...")
         if entity_type != 'activity':
-            print(f"DBSCAN detector currently only supports 'activity'. Skipping for '{entity_type}'.")
-            return []
+             print(f"DBSCAN currently only supports 'activity'. Skipping for '{entity_type}'.")
+             return []
 
-        # Используем правильное имя функции: get_user_activities
-        activities = crud.get_user_activities(db, skip=0, limit=limit)
-        if not activities:
-            print("No activity data found for DBSCAN detection.")
-            return []
+        activities = crud.get_user_activities(db, limit=limit)
+        if not activities: print("DBSCAN Detector: No activity data found."); return []
 
         df_engineered = engineer_features(activities)
-        if df_engineered is None or df_engineered.empty:
-            print("Feature engineering failed or returned empty DataFrame.")
-            return []
+        if df_engineered is None or df_engineered.empty: print("DBSCAN: Feature eng. failed."); return []
 
-        # Получаем признаки (включая OHE)
-        df_features = self._prepare_features(df_engineered)
-        if df_features is None or df_features.empty:
-            print("Feature preparation failed or returned empty DataFrame.")
-            return []
+        # Используем OHE+Scaling специфичный для DBSCAN
+        df_prepared = self._prepare_features(df_engineered)
+        if df_prepared is None or df_prepared.empty: print("DBSCAN: Feature prep. failed."); return []
 
-        # Стандартизация данных - создаем и обучаем scaler здесь!
+        print(f"DBSCAN Detector: Running DBSCAN with eps={self.eps}, min_samples={self.min_samples}")
         try:
-            scaler = StandardScaler()
-            print(f"Scaling features for DBSCAN using {len(df_features.columns)} columns: {list(df_features.columns)}")
-            X_scaled = scaler.fit_transform(df_features) 
-            print("Features scaled successfully.")
+            dbscan = DBSCAN(eps=self.eps, min_samples=self.min_samples, n_jobs=-1) # Используем все ядра
+            clusters = dbscan.fit_predict(df_prepared)
         except Exception as e:
-            print(f"Error scaling features for DBSCAN: {e}")
-            # Выведем детали для отладки
-            print("Features DataFrame info:")
-            try: df_features.info()
-            except: print("Could not print df_features info.")
-            print("\nFeature columns:", list(df_features.columns))
-            print("\nNaN counts per column:", df_features.isna().sum().to_dict())
+            print(f"Error during DBSCAN fitting: {e}")
             return []
 
-        # Применение DBSCAN
-        try:
-            print(f"Running DBSCAN (eps={self.eps}, min_samples={self.min_samples})...")
-            dbscan = DBSCAN(eps=self.eps, min_samples=self.min_samples, n_jobs=-1)
-            labels = dbscan.fit_predict(X_scaled)
-        except Exception as e:
-            print(f"Error running DBSCAN fit_predict: {e}")
-            return []
-
-        # -1 означает выбросы (аномалии)
-        anomaly_indices = df_features.index[labels == -1]
-        print(f"DBSCAN clustering complete. Found {len(anomaly_indices)} outliers (anomalies)." )
+        noise_indices = df_engineered.index[clusters == -1]
+        num_clusters = len(set(clusters)) - (1 if -1 in clusters else 0)
+        print(f"DBSCAN Detector: Found {num_clusters} clusters and {len(noise_indices)} noise points.")
 
         anomalies = []
-        for index in anomaly_indices:
-            original_activity_id = df_engineered.loc[index, 'id']
+        for idx in noise_indices:
+            original_activity = df_engineered.loc[idx]
+            activity_id = original_activity.get('id') # Получаем ID из оригинального (инженерного) DF
+            if activity_id is None: continue # Пропускаем, если нет ID
+
+            # --- УЛУЧШЕНО: Формирование Reason --- 
+            reason_str = (
+                f"Point classified as noise (cluster=-1) by DBSCAN. "
+                f"It doesn't belong to any dense cluster based on current settings (eps={self.eps}, min_samples={self.min_samples}) when analyzing its features."
+            )
+            # ------------------------------------
 
             anomaly_info = {
-                "detector_name": "dbscan",
-                "entity_type": entity_type,
-                "entity_id": int(original_activity_id),
-                "anomaly_score": -1.0, # Условное значение для выбросов DBSCAN
-                "severity": "Medium", # <-- Устанавливаем среднюю серьезность для всех выбросов DBSCAN
-                "details": {
-                    "dbscan_label": -1,
-                    # Можно добавить значения признаков
-                    # "features": df_features.loc[index].to_dict()
-                }
+                "activity_id": int(activity_id),
+                "reason": reason_str, # <--- Используем улучшенный reason
+                "details": {"cluster": -1},
+                "severity": "Medium" # DBSCAN шум считаем Medium
             }
             anomalies.append(anomaly_info)
-            # print(f"    Anomaly detected: ID={original_activity_id}, Label=-1, Severity=Medium")
 
-        print(f"DBSCAN detection finished. Anomalies prepared: {len(anomalies)}")
+        print(f"DBSCAN Detector: Formatted {len(anomalies)} noise points as anomalies.")
         return anomalies
 
-# --- Фабрика детекторов ---
-
-def get_detector(algorithm_name: str, params: schemas.DetectionParams) -> Any:
-    """Возвращает инстанс детектора по имени и параметрам."""
-    if algorithm_name == "isolation_forest":
+# --- Фабрика детекторов (get_detector) ---
+def get_detector(algorithm: str, params: schemas.DetectionParams):
+    """Фабричная функция для создания экземпляров детекторов."""
+    if algorithm == 'isolation_forest':
+        # IF не использует параметры из DetectionParams напрямую в __init__ (пока)
         return IsolationForestDetector()
-    elif algorithm_name == "statistical_zscore":
+    elif algorithm == 'statistical_zscore':
         # Передаем z_threshold из параметров запроса
-        return StatisticalDetector(z_threshold=params.z_threshold or 3.0)
-    elif algorithm_name == "dbscan":
-        # Используем параметры из localStorage/SettingsPage, переданные в params
-        # Загружаем настройки из localStorage (они должны быть переданы в DetectionParams)
-        # TODO: Передать параметры dbscan_eps и dbscan_min_samples в DetectionParams
-        # Пока используем дефолтные значения, если они не переданы
-        eps = params.dbscan_eps if hasattr(params, 'dbscan_eps') and params.dbscan_eps is not None else 0.5
-        min_samples = params.dbscan_min_samples if hasattr(params, 'dbscan_min_samples') and params.dbscan_min_samples is not None else 5
-        print(f"Creating DbscanDetector with eps={eps}, min_samples={min_samples}")
-        return DbscanDetector(eps=eps, min_samples=min_samples)
+        return StatisticalDetector(z_threshold=params.z_threshold)
+    elif algorithm == 'dbscan':
+        # ИСПРАВЛЕНО: Передаем eps и min_samples из параметров запроса
+        return DbscanDetector(eps=params.dbscan_eps, min_samples=params.dbscan_min_samples)
+    elif algorithm == 'autoencoder':
+         return AutoencoderDetector()
     else:
-        raise ValueError(f"Unknown detection algorithm: {algorithm_name}")
+        raise ValueError(f"Unknown algorithm: {algorithm}")
 
 
 
