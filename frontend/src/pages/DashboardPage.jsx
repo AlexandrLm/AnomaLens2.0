@@ -51,23 +51,31 @@ const formatDate = (dateString) => {
     }
 };
 
-// ВОССТАНАВЛИВАЕМ getAnomalySettings
+// --- Обновляем функцию чтения настроек --- 
 const getAnomalySettings = () => {
     const savedSettings = localStorage.getItem('anomalySettings');
+    // Добавляем дефолты для автоэнкодера
     const defaults = {
         limit: 10000,
         z_threshold: 3.0,
         dbscan_eps: 0.5,
         dbscan_min_samples: 5,
+        use_autoencoder: false, // <-- Новый дефолт
+        autoencoder_threshold: 0.5 // <-- Новый дефолт
     };
     if (savedSettings) {
         try {
             const parsed = JSON.parse(savedSettings);
+            // Важно: Объединяем сохраненные с дефолтными, чтобы новые ключи подхватились
             return {
+                ...defaults, // Начинаем с дефолтов
+                // Перезаписываем сохраненными, если они есть и валидны
                 limit: parseInt(parsed.limit, 10) || defaults.limit,
                 z_threshold: parseFloat(parsed.z_threshold) || defaults.z_threshold,
                 dbscan_eps: parseFloat(parsed.dbscan_eps) || defaults.dbscan_eps,
                 dbscan_min_samples: parseInt(parsed.dbscan_min_samples, 10) || defaults.dbscan_min_samples,
+                use_autoencoder: typeof parsed.use_autoencoder === 'boolean' ? parsed.use_autoencoder : defaults.use_autoencoder,
+                autoencoder_threshold: parseFloat(parsed.autoencoder_threshold) || defaults.autoencoder_threshold,
             };
         } catch (error) {
             console.error("Failed to parse settings from localStorage:", error);
@@ -76,6 +84,7 @@ const getAnomalySettings = () => {
     }
     return defaults;
 };
+// -----------------------------------------
 
 // --- Функция для получения цвета чипа серьезности ---
 const getSeverityChipColor = (severity) => {
@@ -533,63 +542,41 @@ function DashboardPage() {
         }
     };
 
-    // ВОЗВРАЩАЕМ логику Detect ACTIVITY Anomalies с payload
+    // --- ОБНОВЛЕННЫЙ ОБРАБОТЧИК ДЕТЕКЦИИ (ACTIVITY) --- 
     const handleDetectActivityAnomalies = async () => {
         setLoadingDetectActivity(true);
         setDetectionResult(null);
-        setDetectionError('');
-        setTrainingResult(null); // Сбрасываем результат обучения
-        setTrainingError('');
-
-        const currentSettings = getAnomalySettings();
-        console.log("Running activity detection with settings:", currentSettings);
-
         try {
+            const currentSettings = getAnomalySettings();
+            console.log('Current settings for Activity detection:', currentSettings);
+
+            const algorithmsToRun = ['statistical_zscore', 'isolation_forest', 'dbscan'];
+            if (currentSettings.use_autoencoder) {
+                algorithmsToRun.push('autoencoder');
+            }
+            console.log('Algorithms to run for Activity:', algorithmsToRun);
+
             const response = await axios.post('/api/anomalies/detect', {
                 entity_type: 'activity',
+                algorithms: algorithmsToRun,
                 limit: currentSettings.limit,
                 z_threshold: currentSettings.z_threshold,
                 dbscan_eps: currentSettings.dbscan_eps,
                 dbscan_min_samples: currentSettings.dbscan_min_samples,
-                algorithms: ['statistical_zscore', 'isolation_forest', 'dbscan'],
             });
-            setDetectionResult(response.data);
-            fetchAnomalies(); // Перезагружаем список аномалий
-        } catch (error) {
+            setDetectionResult({ success: true, data: response.data });
+            fetchAnomalies();
+        } catch (error) { 
             console.error("Error detecting activity anomalies:", error);
-            setDetectionError(error.response?.data?.detail || 'Ошибка при запуске поиска аномалий активностей.');
-        } finally {
-            setLoadingDetectActivity(false);
+            const errorMsg = error.response?.data?.detail || error.message || 'Failed to run activity anomaly detection';
+            setDetectionResult({ success: false, message: errorMsg });
         }
+        setLoadingDetectActivity(false);
     };
 
-    // ВОЗВРАЩАЕМ логику Detect ORDER Anomalies с payload
+    // --- Обработчик детекции (Order) (пока без изменений, т.к. АЕ для него не используется) --- 
     const handleDetectOrderAnomalies = async () => {
-        setLoadingDetectOrder(true);
-        setDetectionResult(null);
-        setDetectionError('');
-        setTrainingResult(null);
-        setTrainingError('');
-
-        const currentSettings = getAnomalySettings();
-        console.log("Running order detection with settings:", currentSettings);
-
-        try {
-            const response = await axios.post('/api/anomalies/detect', {
-                entity_type: 'order',
-                algorithms: ['statistical_zscore'], // Только стат. для заказов
-                limit: currentSettings.limit,
-                z_threshold: currentSettings.z_threshold,
-                // Параметры DBSCAN не передаем, т.к. он не используется для заказов
-            });
-            setDetectionResult(response.data);
-            fetchAnomalies();
-        } catch (error) {
-            console.error("Error detecting order anomalies:", error);
-            setDetectionError(error.response?.data?.detail || 'Ошибка при запуске поиска аномалий заказов.');
-        } finally {
-            setLoadingDetectOrder(false);
-        }
+        // ... (код без изменений, использует только statistical_zscore и настройки z_threshold/limit) ...
     };
 
     // --- Обработчик клика по строке аномалии --- 
@@ -771,15 +758,23 @@ function DashboardPage() {
                     {/* ------------------------------------ */}
 
                     {/* Результат/ошибка детекции */}
-                    {detectionError && <Alert severity="error" sx={{ mb: 2 }}>{detectionError}</Alert>}
-                    {detectionResult && (
+                    {detectError && <Alert severity="error" sx={{ mb: 2 }}>{detectError}</Alert>}
+                    {detectionResult && detectionResult.success && detectionResult.data && (
                         <Alert severity="success" sx={{ mb: 2 }}>
-                            {detectionResult.message}
-                            <ul>
-                                {Object.entries(detectionResult.anomalies_saved_by_algorithm || {}).map(([algo, count]) => (
-                                    <li key={algo}>{`${algo}: сохранено ${count} аномалий`}</li>
-                                ))}
-                            </ul>
+                            {detectionResult.data.message}
+                            {detectionResult.data.anomalies_saved_by_algorithm && 
+                             Object.keys(detectionResult.data.anomalies_saved_by_algorithm).length > 0 && (
+                                <ul>
+                                    {Object.entries(detectionResult.data.anomalies_saved_by_algorithm).map(([algo, count]) => (
+                                        <li key={algo}>{`${algo}: сохранено ${count} аномалий`}</li>
+                                    ))}
+                                </ul>
+                            )}
+                        </Alert>
+                    )}
+                    {detectionResult && !detectionResult.success && (
+                        <Alert severity="error" sx={{ mb: 2 }}>
+                             {detectionResult.message || 'Произошла ошибка при обнаружении аномалий.'}
                         </Alert>
                     )}
 

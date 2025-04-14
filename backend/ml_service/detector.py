@@ -14,24 +14,25 @@ from .. import crud, models
 from .. import schemas # <-- Добавляем или проверяем импорт schemas
 from ..schemas import DetectionParams
 
+# --- Импортируем общие элементы --- 
+from .common import SAVED_MODELS_DIR, NUMERICAL_FEATURES, CATEGORICAL_FEATURE, engineer_features
+# --- Импортируем AutoencoderDetector --- 
+from .autoencoder_detector import AutoencoderDetector
+
+# --- Удаляем определения, перенесенные в common.py ---
+# SAVED_MODELS_DIR = "backend/ml_service/saved_models"
+# NUMERICAL_FEATURES = [...] 
+# CATEGORICAL_FEATURE = 'action_type'
+# def engineer_features(...): ...
+# ----------------------------------------------------
+
 # Путь для сохранения модели по умолчанию
 DEFAULT_MODEL_DIR = "backend/ml_service/saved_models"
 DEFAULT_MODEL_PATH = os.path.join(DEFAULT_MODEL_DIR, "isolation_forest_detector.joblib")
 
 # --- Общие настройки и функции ---
-SAVED_MODELS_DIR = "backend/ml_service/saved_models"
 if not os.path.exists(SAVED_MODELS_DIR):
     os.makedirs(SAVED_MODELS_DIR)
-
-# Список числовых признаков, которые будем рассчитывать/использовать
-NUMERICAL_FEATURES = [
-    'customer_id', 'timestamp_hour', 'timestamp_dayofweek',
-    'details_order_total', 'details_quantity',
-    'time_since_last_activity_ip', 'actions_in_last_5min_ip',
-    'failed_logins_in_last_15min_ip'#, 'distinct_actions_per_ip_5min' # <-- Временно уберем
-]
-# Категориальный признак для OHE
-CATEGORICAL_FEATURE = 'action_type'
 
 def engineer_features(activities: List[models.UserActivity]) -> Optional[pd.DataFrame]:
     """
@@ -206,7 +207,7 @@ def engineer_features(activities: List[models.UserActivity]) -> Optional[pd.Data
 
 # --- Детектор: Isolation Forest ---
 class IsolationForestDetector:
-    DEFAULT_MODEL_PATH = os.path.join(SAVED_MODELS_DIR, "iforest_detector.joblib") # Изменил имя файла
+    DEFAULT_MODEL_PATH = os.path.join(SAVED_MODELS_DIR, "iforest_detector.joblib")
 
     def __init__(self, model_path: str = DEFAULT_MODEL_PATH, contamination: float = 'auto', random_state: int = 42):
         self.model_path = model_path
@@ -800,7 +801,8 @@ def get_detector(algorithm: str, params: schemas.DetectionParams):
         # ИСПРАВЛЕНО: Передаем eps и min_samples из параметров запроса
         return DbscanDetector(eps=params.dbscan_eps, min_samples=params.dbscan_min_samples)
     elif algorithm == 'autoencoder':
-         return AutoencoderDetector()
+         # Используем импортированный класс
+         return AutoencoderDetector() # Correctly references the imported class
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}")
 

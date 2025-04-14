@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 // Убираем axios и связанные state
 // import axios from 'axios';
 import {
@@ -19,14 +19,25 @@ import {
     Info as InfoIcon,
     HelpOutline as HelpIcon
 } from '@mui/icons-material';
+import Switch from '@mui/material/Switch';
+import FormControlLabel from '@mui/material/FormControlLabel';
 
 // Ключи настроек и дефолтные значения (ВОЗВРАЩАЕМ)
-const SETTING_KEYS = ['limit', 'z_threshold', 'dbscan_eps', 'dbscan_min_samples'];
+const SETTING_KEYS = [
+    'limit', 
+    'z_threshold', 
+    'dbscan_eps', 
+    'dbscan_min_samples',
+    'use_autoencoder',
+    'autoencoder_threshold'
+];
 const defaultSettings = {
     limit: 10000,
     z_threshold: 3.0,
     dbscan_eps: 0.5,
     dbscan_min_samples: 5,
+    use_autoencoder: false,
+    autoencoder_threshold: 0.5,
 };
 
 // Описания настроек
@@ -34,13 +45,18 @@ const settingDescriptions = {
     limit: "Максимальное количество записей для анализа и обучения. Влияет на производительность и точность.",
     z_threshold: "Пороговое значение z-оценки для статистического детектора. Чем выше, тем меньше аномалий будет найдено.",
     dbscan_eps: "Размер окрестности точки для алгоритма DBSCAN. Влияет на определение кластеров.",
-    dbscan_min_samples: "Минимальное количество точек для формирования кластера в DBSCAN. Влияет на чувствительность алгоритма."
+    dbscan_min_samples: "Минимальное количество точек для формирования кластера в DBSCAN. Влияет на чувствительность алгоритма.",
+    use_autoencoder: "Включить/выключить использование детектора Autoencoder.",
+    autoencoder_threshold: "Порог ошибки реконструкции (MSE) для Autoencoder. Значения выше считаются аномалиями."
 };
 
 // Функция для форматирования названий настроек
 const formatSettingName = (key) => {
+    if (key === 'use_autoencoder') return 'Use Autoencoder';
+    if (key === 'autoencoder_threshold') return 'Autoencoder Threshold (MSE)';
     return key
-        .split('_')
+        .replace(/_/g, ' ')
+        .split(' ')
         .map(word => word.charAt(0).toUpperCase() + word.slice(1))
         .join(' ');
 };
@@ -52,20 +68,20 @@ function SettingsPage() {
         if (savedSettings) {
             try {
                 const parsed = JSON.parse(savedSettings);
-                // Убедимся, что все ключи присутствуют
                 const completeSettings = { ...defaultSettings };
                 for (const key of SETTING_KEYS) {
                     if (parsed[key] !== undefined) {
-                        // Пытаемся привести к числу, если нужно, иначе оставляем как есть (если не получилось)
                         if (key === 'limit' || key === 'dbscan_min_samples') {
                             completeSettings[key] = parseInt(parsed[key], 10) || defaultSettings[key];
-                        } else if (key === 'z_threshold' || key === 'dbscan_eps') {
+                        } else if (key === 'z_threshold' || key === 'dbscan_eps' || key === 'autoencoder_threshold') {
                             completeSettings[key] = parseFloat(parsed[key]) || defaultSettings[key];
+                        } else if (key === 'use_autoencoder') {
+                            completeSettings[key] = typeof parsed[key] === 'boolean' ? parsed[key] : defaultSettings[key];
                         } else {
-                             completeSettings[key] = parsed[key]; // Для будущих строковых настроек
+                            completeSettings[key] = parsed[key];
                         }
                     } else {
-                         completeSettings[key] = defaultSettings[key]; // Берем дефолт, если ключ отсутствовал
+                        completeSettings[key] = defaultSettings[key];
                     }
                 }
                 return completeSettings;
@@ -84,76 +100,79 @@ function SettingsPage() {
 
     // ВОЗВРАЩАЕМ ОБРАБОТЧИК ИЗМЕНЕНИЙ ДЛЯ ЧИСЕЛ
     const handleChange = (event) => {
-        const { name, value } = event.target;
-        // Позволяем ввод пустой строки или знака минуса временно
-        if (value === '' || (value === '-' && (name === 'z_threshold' || name === 'dbscan_eps'))) {
-             setSettings(prevSettings => ({ ...prevSettings, [name]: value }));
-             return;
-        }
-        // Пытаемся парсить
-        const numValue = (name === 'limit' || name === 'dbscan_min_samples')
-                       ? parseInt(value, 10)
-                       : parseFloat(value);
-
-        // Обновляем state только если парсинг удался
-        if (!isNaN(numValue)) {
-            setSettings(prevSettings => ({
-                ...prevSettings,
-                [name]: numValue
-            }));
+        const { name, value, type, checked } = event.target;
+        
+        if (type === 'checkbox') {
+            setSettings(prev => ({ ...prev, [name]: checked }));
         } else {
-             // Если парсинг не удался (например, ввели буквы), не обновляем state
-             console.warn(`Invalid input for ${name}: ${value}`);
+            if (value === '' || (value === '-' && (name === 'z_threshold' || name === 'dbscan_eps' || name === 'autoencoder_threshold'))) {
+                 setSettings(prev => ({ ...prev, [name]: value }));
+                 return;
+            }
+            const numValue = (name === 'limit' || name === 'dbscan_min_samples') 
+                           ? parseInt(value, 10) 
+                           : parseFloat(value);
+
+            if (!isNaN(numValue)) {
+                setSettings(prev => ({ ...prev, [name]: numValue }));
+            } else {
+                console.warn(`Invalid input for ${name}: ${value}`);
+            }
         }
     };
 
      // ВОЗВРАЩАЕМ ОБРАБОТЧИК ПОТЕРИ ФОКУСА ДЛЯ ВАЛИДАЦИИ
     const handleBlur = (event) => {
-        const { name, value } = event.target;
-        let finalValue = settings[name]; // Текущее значение из state
+        const { name, value, type } = event.target;
+        if (type === 'checkbox') return;
 
-        // Если в поле осталась пустая строка или некорректное значение,
-        // или значение вне допустимого диапазона, возвращаем дефолт
-        if (value === '' || typeof finalValue !== 'number' || isNaN(finalValue)) {
-            finalValue = defaultSettings[name];
-        } else {
-             // Дополнительная валидация диапазона
+        let finalValue = settings[name];
+        
+        if (value === '' || (typeof finalValue !== 'number' && name !== 'use_autoencoder') || (typeof finalValue === 'number' && isNaN(finalValue)) ) {
+             finalValue = defaultSettings[name];
+        } else if (typeof finalValue === 'number') {
              if ((name === 'limit' || name === 'dbscan_min_samples') && finalValue < 1) {
                  finalValue = defaultSettings[name];
-             } else if ((name === 'z_threshold' || name === 'dbscan_eps') && finalValue < 0) {
+             } else if ((name === 'z_threshold' || name === 'dbscan_eps' || name === 'autoencoder_threshold') && finalValue < 0) {
                   finalValue = defaultSettings[name];
              }
         }
-        // Обновляем state окончательным значением
-        setSettings(prevSettings => ({ ...prevSettings, [name]: finalValue }));
+        if (settings[name] !== finalValue) { 
+            setSettings(prev => ({ ...prev, [name]: finalValue }));
+        }
     };
 
     // ВОЗВРАЩАЕМ ОБРАБОТЧИК СОХРАНЕНИЯ В localStorage
     const handleSave = () => {
         console.log("Saving settings to localStorage:", settings);
-        // Финальная проверка перед сохранением (на случай, если blur не сработал)
          const finalSettings = { ...settings };
          let reverted = false;
          for (const key of SETTING_KEYS) {
-             if (typeof finalSettings[key] !== 'number' || isNaN(finalSettings[key])) {
+             const expectedType = typeof defaultSettings[key];
+             if (expectedType === 'number' && (typeof finalSettings[key] !== 'number' || isNaN(finalSettings[key]))) {
+                 finalSettings[key] = defaultSettings[key];
+                 reverted = true;
+             } else if (expectedType === 'boolean' && typeof finalSettings[key] !== 'boolean') {
                  finalSettings[key] = defaultSettings[key];
                  reverted = true;
              }
+             if (expectedType === 'number') {
+                 if ((key === 'limit' || key === 'dbscan_min_samples') && finalSettings[key] < 1) {
+                     finalSettings[key] = defaultSettings[key]; reverted = true;
+                 } else if ((key === 'z_threshold' || key === 'dbscan_eps' || key === 'autoencoder_threshold') && finalSettings[key] < 0) {
+                     finalSettings[key] = defaultSettings[key]; reverted = true;
+                 }
+             }
          }
          if (reverted) {
-             setSettings(finalSettings); // Обновляем state, если что-то откатили
+             setSettings(finalSettings);
              console.warn("Reverted some invalid settings to defaults before saving.");
          }
-
         try {
             localStorage.setItem('anomalySettings', JSON.stringify(finalSettings));
             setStatusMessage('Настройки успешно сохранены!');
-            // Добавляем анимацию успешного сохранения
             setSavedAnimation(true);
-            setTimeout(() => {
-                setStatusMessage('');
-                setSavedAnimation(false);
-            }, 3000);
+            setTimeout(() => { setStatusMessage(''); setSavedAnimation(false); }, 3000);
         } catch (error) {
             console.error("Error saving settings to localStorage:", error);
             setStatusMessage('Ошибка сохранения настроек!');
@@ -237,59 +256,80 @@ function SettingsPage() {
                                 </Typography>
                                 
                                 <Grid container spacing={3}>
-                                    {SETTING_KEYS.map((key, index) => (
-                                        <Zoom 
-                                            in={true} 
-                                            style={{ 
-                                                transitionDelay: `${index * 100}ms`
-                                            }}
-                                            key={key}
-                                        >
-                                            <Grid item xs={12} sm={6}>
-                                                <TextField
-                                                    fullWidth
-                                                    label={formatSettingName(key)}
-                                                    name={key}
-                                                    value={settings[key] !== undefined ? String(settings[key]) : ''}
-                                                    onChange={handleChange}
-                                                    onBlur={handleBlur}
-                                                    type="text"
-                                                    variant="outlined"
-                                                    InputProps={{
-                                                        endAdornment: (
-                                                            <InputAdornment position="end">
-                                                                <Tooltip 
-                                                                    title={settingDescriptions[key]} 
-                                                                    arrow
-                                                                    placement="top"
-                                                                    sx={{ 
-                                                                        maxWidth: 300,
-                                                                        fontSize: '1rem'
-                                                                    }}
-                                                                >
-                                                                    <IconButton edge="end" size="small">
-                                                                        <HelpIcon fontSize="small" />
-                                                                    </IconButton>
-                                                                </Tooltip>
-                                                            </InputAdornment>
-                                                        ),
-                                                    }}
-                                                    sx={{
-                                                        '& .MuiOutlinedInput-root': {
-                                                            backgroundColor: (theme) => alpha(theme.palette.background.paper, 0.8),
-                                                            transition: 'all 0.3s ease',
-                                                            '&:hover': {
-                                                                backgroundColor: 'white',
-                                                            },
-                                                            '&.Mui-focused': {
-                                                                backgroundColor: 'white',
+                                    {SETTING_KEYS.map((key, index) => {
+                                        const isBooleanField = key === 'use_autoencoder';
+                                        const isNumberField = typeof defaultSettings[key] === 'number';
+
+                                        return (
+                                            <Zoom 
+                                                in={true} 
+                                                style={{ 
+                                                    transitionDelay: `${index * 100}ms`
+                                                }}
+                                                key={key}
+                                            >
+                                                <Grid item xs={12} sm={isBooleanField ? 12 : 6}>
+                                                    {isBooleanField ? (
+                                                        <FormControlLabel
+                                                            control={
+                                                                <Switch
+                                                                    checked={settings[key]}
+                                                                    onChange={handleChange}
+                                                                    name={key}
+                                                                    color="primary"
+                                                                />
                                                             }
-                                                        }
-                                                    }}
-                                                />
-                                            </Grid>
-                                        </Zoom>
-                                    ))}
+                                                            label={
+                                                                <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                                                                    {formatSettingName(key)}
+                                                                    <Tooltip title={settingDescriptions[key]} placement="top" arrow>
+                                                                        <HelpIcon sx={{ ml: 1, fontSize: '1rem', color: 'text.secondary' }} />
+                                                                    </Tooltip>
+                                                                </Box>
+                                                            }
+                                                            sx={{ width: '100%', justifyContent: 'space-between', ml: 0, mt: 2, mb: 1 }}
+                                                        />
+                                                    ) : (
+                                                        <TextField
+                                                            fullWidth
+                                                            variant="outlined"
+                                                            label={formatSettingName(key)}
+                                                            type={isNumberField ? "number" : "text"}
+                                                            name={key}
+                                                            value={settings[key]}
+                                                            onChange={handleChange}
+                                                            onBlur={handleBlur}
+                                                            InputProps={{
+                                                                inputProps: {
+                                                                    step: (key === 'limit' || key === 'dbscan_min_samples') ? 1 : 0.01,
+                                                                    min: (key === 'limit' || key === 'dbscan_min_samples') ? 1 : 0,
+                                                                },
+                                                                endAdornment: (
+                                                                    <InputAdornment position="end">
+                                                                        <Tooltip title={settingDescriptions[key]} placement="top" arrow>
+                                                                            <HelpIcon sx={{ fontSize: '1rem', color: 'text.secondary' }} />
+                                                                        </Tooltip>
+                                                                    </InputAdornment>
+                                                                ),
+                                                            }}
+                                                            sx={{
+                                                                '& .MuiOutlinedInput-root': {
+                                                                    backgroundColor: (theme) => alpha(theme.palette.background.paper, 0.8),
+                                                                    transition: 'all 0.3s ease',
+                                                                    '&:hover': {
+                                                                        backgroundColor: 'white',
+                                                                    },
+                                                                    '&.Mui-focused': {
+                                                                        backgroundColor: 'white',
+                                                                    }
+                                                                }
+                                                            }}
+                                                        />
+                                                    )}
+                                                </Grid>
+                                            </Zoom>
+                                        );
+                                    })}
                                 </Grid>
                                 
                                 <Divider sx={{ my: 4 }} />

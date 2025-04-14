@@ -52,40 +52,55 @@ router = APIRouter()
 
 # --- Функции для фоновых задач (возвращаем параметры) ---
 def train_models_background(db_session_factory, limit: int, z_threshold: float, entity_type: str):
-    # Эта функция вызывалась из /train, который снова будет принимать параметры
     db = db_session_factory()
     try:
         print(f"Background Training ({entity_type}): Starting with limit={limit}, z_threshold={z_threshold}")
 
-        # Статистический детектор
-        if entity_type in ['activity', 'order']:
-             # Создаем mock params для вызова get_detector (он ожидает DetectionParams)
-             mock_detect_params_stat = schemas.DetectionParams(
-                 entity_type=entity_type, algorithms=['statistical_zscore'],
-                 limit=limit, z_threshold=z_threshold,
-                 dbscan_eps=0.5, dbscan_min_samples=5 # Дефолтные для DBSCAN
-             )
-             stat_detector: StatisticalDetector = get_detector('statistical_zscore', mock_detect_params_stat)
-             print(f"Initiating training/stats calculation for StatisticalDetector (entity='{entity_type}')")
-             stat_detector.train(db, entity_type=entity_type, limit=limit)
-             print(f"StatisticalDetector training/stats calculation completed.")
-
-        # Isolation Forest
+        # --- Общий список алгоритмов для данного типа сущности ---
+        algorithms_to_train = []
         if entity_type == 'activity':
-             mock_detect_params_if = schemas.DetectionParams(
-                 entity_type=entity_type, algorithms=['isolation_forest'],
-                 limit=limit, z_threshold=z_threshold,
-                 dbscan_eps=0.5, dbscan_min_samples=5
-             )
-             if_detector: IsolationForestDetector = get_detector('isolation_forest', mock_detect_params_if)
-             print(f"Initiating training for IsolationForestDetector (entity='{entity_type}')")
-             if_detector.train(db=db, entity_type=entity_type, limit=limit)
-             print(f"IsolationForestDetector training completed.")
+            algorithms_to_train = ['statistical_zscore', 'isolation_forest', 'autoencoder']
+        elif entity_type == 'order':
+            algorithms_to_train = ['statistical_zscore']
+        else:
+            print(f"No specific algorithms defined for training entity_type='{entity_type}'")
 
-        print(f"Background training finished successfully for entity_type='{entity_type}'.")
+        # --- Цикл по алгоритмам --- 
+        for algo_name in algorithms_to_train:
+            print(f"\n--- Initiating training for {algo_name} (entity='{entity_type}') ---")
+            try:
+                # Создаем mock DetectionParams, так как get_detector его ожидает.
+                # Важно передать правильные параметры, которые могут понадобиться детектору.
+                # Для Autoencoder конкретные параметры пока не важны, но для других могут быть.
+                mock_detect_params = schemas.DetectionParams(
+                    entity_type=entity_type,
+                    algorithms=[algo_name],
+                    limit=limit, # Limit может использоваться детекторами при загрузке данных
+                    z_threshold=z_threshold, # Передаем, т.к. нужен для StatisticalDetector
+                    # Передаем дефолты для DBSCAN, т.к. они есть в схеме
+                    dbscan_eps=0.5, 
+                    dbscan_min_samples=5
+                )
+                
+                detector_instance = get_detector(algo_name, mock_detect_params)
+                
+                # Вызываем метод train детектора
+                detector_instance.train(db=db, entity_type=entity_type, limit=limit)
+                
+                print(f"--- Completed training for {algo_name} (entity='{entity_type}') ---")
+
+            except ImportError as ie:
+                 print(f"Skipping training for {algo_name} due to missing dependency: {ie}")
+            except Exception as train_exc:
+                 print(f"ERROR during training for {algo_name} (entity='{entity_type}'): {train_exc}")
+                 import traceback
+                 traceback.print_exc() # Выводим полный traceback для отладки
+        # ------------------------
+
+        print(f"\nBackground training finished for entity_type='{entity_type}'.")
 
     except Exception as e:
-        print(f"Error during background training for entity_type='{entity_type}': {e}")
+        print(f"General error during background training setup for entity_type='{entity_type}': {e}")
     finally:
         db.close()
 
@@ -228,7 +243,7 @@ def train_anomaly_detectors(
     return {"message": f"Model training initiated in the background for entity type(s): {entity_type_str}"}
 
 # ВОЗВРАЩАЕМ использование params
-@router.post("/detect", response_model=schemas.DetectResponse)
+@router.post("/detect", response_model=schemas.DetectResponse, tags=["Anomaly Detection"])
 def run_detection_and_save(
     params: schemas.DetectionParams,
     db: Session = Depends(get_db)
@@ -333,9 +348,13 @@ def run_detection_and_save(
 
     # Формируем ответ
     total_anomalies = sum(saved_counts.values())
+    response_message = f"Detection completed for entity '{params.entity_type}' using algorithms: [{', '.join(params.algorithms)}]. Found and saved {total_anomalies} anomaly records."
+    
+    # --- ИСПРАВЛЕНО: Возвращаем только поля, определенные в схеме DetectResponse --- 
     return schemas.DetectResponse(
-        message=f"Detection completed for entity '{params.entity_type}' using [{', '.join(params.algorithms)}]. Found and saved {total_anomalies} anomaly records.",
-        algorithms_used=params.algorithms,
-        entity_type=params.entity_type,
+        message=response_message, 
         anomalies_saved_by_algorithm=saved_counts
     ) 
+    # -----------------------------------------------------------------------------
+
+# ... (endpoint /{anomaly_id} - если есть) ... 
