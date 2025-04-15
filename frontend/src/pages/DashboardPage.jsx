@@ -365,6 +365,20 @@ function DashboardPage() {
     const [scoreError, setScoreError] = useState('');
     // --------------------------------------------------
 
+    // --- Получаем актуальные настройки для порогов ---
+    const currentSettings = useMemo(() => getAnomalySettings(), []); // Получаем настройки один раз
+
+    // --- Определяем порог для графика скоров ---
+    const currentThreshold = useMemo(() => {
+        if (selectedDetector === 'statistical_zscore') {
+            return currentSettings.z_threshold;
+        } else if (selectedDetector === 'autoencoder') {
+            return currentSettings.autoencoder_threshold;
+        }
+        return null; // Для других детекторов порог не показываем
+    }, [selectedDetector, currentSettings]);
+    // -----------------------------------------
+
     // --- Подготовка данных и опций для графиков (используем useMemo) ---
     const activityTimelineChartData = useMemo(() => {
         if (!activityTimelineData) return null;
@@ -606,12 +620,44 @@ function DashboardPage() {
             const errorMsg = error.response?.data?.detail || error.message || 'Failed to run activity anomaly detection';
             setDetectionResult({ success: false, message: errorMsg });
         }
-        setLoadingDetectActivity(false);
+        finally {
+            setLoadingDetectActivity(false);
+        }
     };
 
-    // --- Обработчик детекции (Order) (пока без изменений, т.к. АЕ для него не используется) --- 
+    // --- Обработчик детекции (Order) --- 
     const handleDetectOrderAnomalies = async () => {
-        // ... (код без изменений, использует только statistical_zscore и настройки z_threshold/limit) ...
+        // --- РЕАЛИЗАЦИЯ ЛОГИКИ ---
+        setLoadingDetectOrder(true); // Используем отдельное состояние
+        setDetectionResult(null); // Сбрасываем предыдущий результат
+        setDetectError('');     // Сбрасываем предыдущую ошибку
+        try {
+            const currentSettings = getAnomalySettings();
+            console.log('Current settings for Order detection:', currentSettings);
+
+            // Для заказов пока используем только статистический детектор
+            const algorithmsToRun = ['statistical_zscore']; 
+            console.log('Algorithms to run for Order:', algorithmsToRun);
+
+            const response = await axios.post('/api/anomalies/detect', {
+                entity_type: 'order',
+                algorithms: algorithmsToRun,
+                limit: currentSettings.limit,
+                z_threshold: currentSettings.z_threshold,
+                // dbscan и autoencoder параметры здесь не нужны
+            });
+            console.log("Order detection response:", response.data);
+            setDetectionResult({ success: true, data: response.data });
+            fetchAnomalies(); // Обновляем список аномалий после успешной детекции
+        } catch (error) { 
+            console.error("Error detecting order anomalies:", error);
+            const errorMsg = error.response?.data?.detail || error.message || 'Failed to run order anomaly detection';
+            setDetectionResult({ success: false, message: errorMsg });
+            setDetectError(errorMsg); // Сохраняем ошибку для отображения
+        } finally {
+            setLoadingDetectOrder(false); // Гарантированно сбрасываем состояние загрузки
+        }
+        // --------------------------
     };
 
     // --- Обработчик клика по строке аномалии --- 
@@ -945,11 +991,12 @@ function DashboardPage() {
                         </FormControl>
                     </Box>
                     {/* Вставляем компонент гистограммы */}
-                    <ScoreDistributionChart 
-                        scores={scoreData} 
-                        detectorName={selectedDetector} 
-                        isLoading={scoreLoading} 
-                        error={scoreError} 
+                    <ScoreDistributionChart
+                        scores={scoreData}
+                        detectorName={selectedDetector}
+                        isLoading={scoreLoading}
+                        error={scoreError}
+                        thresholdValue={currentThreshold}
                     />
                 </Paper>
             </Grid>

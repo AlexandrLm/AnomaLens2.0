@@ -8,6 +8,7 @@ import {
   Tooltip,
   Legend,
 } from 'chart.js';
+import annotationPlugin from 'chartjs-plugin-annotation';
 import { Bar } from 'react-chartjs-2';
 import {
   Box,
@@ -16,6 +17,7 @@ import {
   Alert,
   useTheme
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 
 // Регистрация необходимых компонентов Chart.js
 ChartJS.register(
@@ -24,7 +26,8 @@ ChartJS.register(
   BarElement,
   Title,
   Tooltip,
-  Legend
+  Legend,
+  annotationPlugin
 );
 
 // Функция для создания данных гистограммы
@@ -92,7 +95,7 @@ const createHistogramData = (scores, numBins = 20) => {
   };
 };
 
-function ScoreDistributionChart({ scores, detectorName, isLoading, error }) {
+function ScoreDistributionChart({ scores, detectorName, isLoading, error, thresholdValue }) {
   const theme = useTheme();
 
   // Используем useMemo для мемоизации данных гистограммы
@@ -125,6 +128,31 @@ function ScoreDistributionChart({ scores, detectorName, isLoading, error }) {
         callbacks: {
             // Можно настроить тултипы, если нужно
         }
+      },
+      annotation: {
+        annotations: {
+          ...(thresholdValue !== null && thresholdValue !== undefined && {
+            thresholdLine: {
+              type: 'line',
+              scaleID: 'x',
+              value: thresholdValue,
+              borderColor: theme.palette.error.main, // Красный цвет для порога
+              borderWidth: 2,
+              borderDash: [6, 6], // Пунктирная линия
+              label: {
+                content: `Порог (${thresholdValue.toFixed(3)})`,
+                enabled: true,
+                position: 'start', // Положение метки
+                backgroundColor: alpha(theme.palette.error.main, 0.8),
+                color: theme.palette.error.contrastText,
+                font: {
+                    size: 10
+                },
+                yAdjust: -10, // Сдвиг метки вверх
+              }
+            }
+          })
+        }
       }
     },
     scales: {
@@ -147,7 +175,7 @@ function ScoreDistributionChart({ scores, detectorName, isLoading, error }) {
         beginAtZero: true, // Начинаем ось Y с нуля
       },
     },
-  }), [detectorName]);
+  }), [detectorName, thresholdValue, theme]);
 
   if (isLoading) {
     return (

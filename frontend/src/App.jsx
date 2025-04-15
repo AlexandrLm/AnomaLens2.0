@@ -46,6 +46,7 @@ import ProductsPage from './pages/ProductsPage';
 import OrdersPage from './pages/OrdersPage';
 import ActivitiesPage from './pages/ActivitiesPage';
 import ExplanationPage from './pages/ExplanationPage';
+import AnalysisPage from './pages/AnalysisPage';
 import theme from './theme';
 
 const drawerWidth = 280;
@@ -58,6 +59,7 @@ const menuItems = [
   { text: 'Продукты', icon: <Category />, path: '/products' },
   { text: 'Заказы', icon: <ShoppingCart />, path: '/orders' },
   { text: 'Активности', icon: <ReceiptLong />, path: '/activities' },
+  { text: 'Анализ Признаков', icon: <SearchRounded />, path: '/analysis' },
   { divider: true },
   { text: 'О Методах', icon: <Info />, path: '/explanation' },
   { text: 'Настройки', icon: <SettingsIcon />, path: '/settings' },
@@ -202,7 +204,6 @@ function App() {
                   ) : (
                     <Fade key={item.text} in={true} style={{ transitionDelay: `${index * 50}ms` }}>
                       <ListItem 
-                        button 
                         component={NavLink} 
                         to={item.path}
                         sx={{
@@ -278,6 +279,7 @@ function App() {
               <Route path="/orders" element={<OrdersPage />} />
               <Route path="/activities" element={<ActivitiesPage />} />
               <Route path="/explanation" element={<ExplanationPage />} />
+              <Route path="/analysis" element={<AnalysisPage />} />
             </Routes>
           </Box>
         </Box>

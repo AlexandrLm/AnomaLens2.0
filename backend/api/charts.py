@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from enum import Enum
+from pydantic import BaseModel
 
 from ..database import get_db
 from .. import crud
@@ -77,3 +78,43 @@ def get_anomaly_scores_distribution(
         print(f"Error in /anomaly_scores endpoint for detector {detector_name}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error fetching anomaly scores.")
 # -------------------------------------------- 
+
+# === НОВЫЙ ЭНДПОИНТ ДЛЯ SCATTER PLOT ===
+
+# Определяем схему ответа для Scatter Plot
+class ScatterPoint(BaseModel):
+    id: int
+    x: float
+    y: float # item_count будет float? Хотя в crud он int. Сделаем float для гибкости.
+    is_anomaly: bool
+
+@router.get("/feature_scatter", response_model=List[ScatterPoint])
+def get_feature_scatter_plot(
+    entity_type: str = Query("order", description="Type of entity ('order')"),
+    feature_x: str = Query("total_amount", description="Feature for X-axis ('total_amount')"),
+    feature_y: str = Query("item_count", description="Feature for Y-axis ('item_count')"),
+    limit: int = Query(500, description="Maximum number of points to return", ge=10, le=5000),
+    db: Session = Depends(get_db)
+):
+    """
+    Возвращает данные для диаграммы рассеяния (scatter plot).
+    Пока поддерживает только entity_type='order' с признаками 'total_amount' и 'item_count'.
+    """
+    try:
+        data = crud.get_feature_scatter_data(
+            db=db,
+            entity_type=entity_type,
+            feature_x=feature_x,
+            feature_y=feature_y,
+            limit=limit
+        )
+        # Преобразуем item_count в float для соответствия схеме (хотя он int)
+        # Это не обязательно, Pydantic справится, но для ясности
+        return [ScatterPoint(id=p["id"], x=p["x"], y=float(p["y"]), is_anomaly=p["is_anomaly"]) for p in data]
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error in /feature_scatter endpoint: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error fetching scatter plot data.")
+
+# ========================================== 

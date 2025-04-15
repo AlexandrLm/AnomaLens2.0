@@ -418,29 +418,95 @@ def get_anomaly_scores_by_detector(
     end_time: Optional[datetime] = None,
     limit: int = 10000 # Ограничение на всякий случай
 ) -> List[float]:
-    """
-    Получает список значений anomaly_score для указанного детектора.
-    Фильтрует по detector_name и опционально по временному диапазону.
-    Исключает записи, где anomaly_score is None.
-    """
-    print(f"CRUD: Getting anomaly scores for detector '{detector_name}'...")
-    query = db.query(models.Anomaly.anomaly_score)
-    query = query.filter(models.Anomaly.detector_name == detector_name)
-    query = query.filter(models.Anomaly.anomaly_score.isnot(None))
+    """Возвращает список скоров для указанного детектора."""
+    query = db.query(models.Anomaly.anomaly_score)\
+        .filter(models.Anomaly.detector_name == detector_name)\
+        .filter(models.Anomaly.anomaly_score != None)
 
-    # Фильтрация по времени
     if start_time:
         query = query.filter(models.Anomaly.detection_timestamp >= start_time)
     if end_time:
         query = query.filter(models.Anomaly.detection_timestamp <= end_time)
 
-    # Добавляем сортировку и лимит для предотвращения слишком больших запросов
-    query = query.order_by(models.Anomaly.detection_timestamp.desc()).limit(limit)
+    results = query.limit(limit).all()
+    return [score for (score,) in results]
 
-    results = query.all()
-    # .all() вернет список кортежей (scalar_value,), извлекаем первые элементы
-    scores = [row[0] for row in results]
-    print(f"CRUD: Found {len(scores)} scores for detector '{detector_name}'.")
-    return scores
+# === НОВАЯ ФУНКЦИЯ ДЛЯ SCATTER PLOT ===
+def get_feature_scatter_data(
+    db: Session,
+    entity_type: str = 'order', # Пока только 'order'
+    feature_x: str = 'total_amount',
+    feature_y: str = 'item_count',
+    limit: int = 500
+) -> List[Dict]:
+    """
+    Возвращает данные для диаграммы рассеяния признаков.
+    Поддерживает entity_type='order' и заданные признаки.
+    Загружает заказы и проверяет, являются ли они аномальными.
+    """
+    if entity_type != 'order':
+        raise NotImplementedError(f"Scatter plot data is currently only supported for entity_type='order'. Got: {entity_type}")
+
+    allowed_features = {
+        'total_amount', 
+        'item_count', 
+        'total_quantity', 
+        'hour_of_day', 
+        'day_of_week'
+    }
+    if feature_x not in allowed_features or feature_y not in allowed_features:
+        raise ValueError(f"Invalid feature name(s). Allowed features: {allowed_features}. Got: x='{feature_x}', y='{feature_y}'")
+
+    # Определяем, нужно ли загружать items
+    needs_items = 'item_count' in [feature_x, feature_y] or 'total_quantity' in [feature_x, feature_y]
+    
+    # Запрашиваем заказы
+    orders_query = db.query(models.Order)
+    if needs_items:
+        orders_query = orders_query.options(subqueryload(models.Order.items))
+    
+    orders_query = orders_query.order_by(models.Order.id.desc()).limit(limit)
+    orders = orders_query.all()
+
+    # Получаем ID аномальных заказов для быстрой проверки
+    anomalous_order_ids = { 
+        anomaly.entity_id 
+        for anomaly in db.query(models.Anomaly.entity_id)\
+            .filter(models.Anomaly.entity_type == 'order')\
+            .distinct()
+    }
+
+    # Функция для извлечения значения признака
+    def get_feature_value(order: models.Order, feature_name: str):
+        if feature_name == 'total_amount':
+            return order.total_amount
+        elif feature_name == 'item_count':
+            return len(order.items) if order.items else 0
+        elif feature_name == 'total_quantity':
+            return sum(item.quantity for item in order.items) if order.items else 0
+        elif feature_name == 'hour_of_day':
+            return order.created_at.hour if order.created_at else None
+        elif feature_name == 'day_of_week':
+             # weekday() возвращает 0 для понедельника, 6 для воскресенья
+            return order.created_at.weekday() if order.created_at else None
+        return None # На случай, если что-то пойдет не так
+
+    scatter_data = []
+    for order in orders:
+        val_x = get_feature_value(order, feature_x)
+        val_y = get_feature_value(order, feature_y)
+        is_anomaly = order.id in anomalous_order_ids
+
+        # Пропускаем точки с None значениями (например, если created_at был Null)
+        if val_x is not None and val_y is not None:
+            scatter_data.append({
+                "id": order.id,
+                "x": float(val_x), # Приводим к float для консистентности
+                "y": float(val_y),
+                "is_anomaly": is_anomaly
+            })
+
+    return scatter_data
+# =======================================
 
 # ... (rest of the file) ... 
