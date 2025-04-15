@@ -1,12 +1,48 @@
-# React + Vite
+# AnomaLens Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Это фронтенд-часть приложения AnomaLens 2.0, построенная с использованием React и Vite. Она предоставляет пользовательский интерфейс для взаимодействия с бэкендом, визуализации данных и результатов обнаружения аномалий.
 
-Currently, two official plugins are available:
+## Основные технологии
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+*   **React:** Библиотека для построения пользовательских интерфейсов.
+*   **Vite:** Быстрый инструмент для сборки фронтенда.
+*   **Material UI (MUI):** Библиотека готовых React-компонентов.
+*   **Chart.js & react-chartjs-2:** Для отображения графиков и диаграмм.
+*   **Axios:** Для выполнения HTTP-запросов к бэкенду.
+*   **React Router:** Для навигации по страницам.
 
-## Expanding the ESLint configuration
+## Установка и Запуск
 
-If you are developing a production application, we recommend using TypeScript and enable type-aware lint rules. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+1.  **Перейдите в директорию `frontend`:**
+    ```bash
+    cd frontend
+    ```
+2.  **Установите зависимости:**
+    ```bash
+    npm install
+    ```
+3.  **Запустите dev-сервер:**
+    ```bash
+    npm run dev
+    ```
+    Приложение будет доступно по адресу `http://localhost:3000` (или другому порту, если он занят).
+
+## Основные разделы
+
+*   **Панель Управления (`/`)**: Главная страница, отображающая сводную информацию, недавние аномалии и основные графики (динамика активности, сводка по детекторам, распределение оценок).
+*   **Симулятор Данных (`/simulator`)**: Страница для генерации тестовых данных (пользователи, продукты, заказы, активности).
+*   **Пользователи (`/customers`)**: Просмотр списка клиентов.
+*   **Продукты (`/products`)**: Просмотр списка продуктов и категорий.
+*   **Заказы (`/orders`)**: Просмотр списка заказов.
+*   **Активности (`/activities`)**: Просмотр лога активности пользователей.
+*   **Анализ Признаков (`/analysis`)**: **(Новое)** Страница для визуального анализа данных с помощью диаграммы рассеяния (Scatter Plot).
+    *   Позволяет выбрать тип сущности (`Заказы` или `Сессии Активности`).
+    *   Позволяет выбрать числовые признаки для осей X и Y.
+    *   Отображает точки данных, выделяя цветом те, которые были помечены как аномальные.
+    *   Поддерживает масштабирование и панорамирование для детального изучения.
+*   **О Методах (`/explanation`)**: Описание используемых методов обнаружения аномалий.
+*   **Настройки (`/settings`)**: Настройка параметров для алгоритмов обнаружения аномалий.
+
+---
+
+*Этот README был обновлен для отражения текущей структуры и функциональности.*

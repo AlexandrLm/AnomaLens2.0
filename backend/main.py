@@ -7,6 +7,7 @@ from .api import simulator # Импортируем роутер симулят�
 from .api import anomalies # Импортируем роутер аномалий
 from .api import dashboard # <--- Добавляем импорт нового роутера
 from .api import charts # <-- Импортируем роутер для графиков
+from .api import orders # <--- Импортируем новый роутер
 
 # Создаем таблицы в базе данных
 # В реальном приложении лучше использовать Alembic для миграций
@@ -37,6 +38,7 @@ app.include_router(simulator.router, prefix="/api/simulator", tags=["Data Simula
 app.include_router(anomalies.router, prefix="/api/anomalies", tags=["Anomaly Detection"])
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"]) # <--- Добавляем новый роутер
 app.include_router(charts.router, prefix="/api/charts", tags=["Charts"]) # <-- Добавляем роутер для графиков
+app.include_router(orders.router, prefix="/api/order_data", tags=["Orders"]) # <--- Подключаем роутер заказов
 
 # Другие роутеры (например, для аномалий) будут добавляться здесь
 # app.include_router(anomalies_router.router, prefix="/api/anomalies", tags=["Anomalies"])

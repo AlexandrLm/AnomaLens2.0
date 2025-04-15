@@ -14,7 +14,14 @@ const featureOptions = {
         { value: 'hour_of_day', label: 'Час Дня' },
         { value: 'day_of_week', label: 'День Недели (0=Пн)' },
     ],
-    // activity: [] // Пока пусто
+    // --- ДОБАВЛЯЕМ ПРИЗНАКИ ДЛЯ СЕССИЙ ---
+    activity_session: [
+        { value: 'action_count', label: 'Кол-во Действий' },
+        { value: 'session_duration_seconds', label: 'Длительность (сек)' },
+        { value: 'unique_action_types', label: 'Уникальных Типов Действий' },
+        { value: 'failed_login_count', label: 'Неудачных Логинов' },
+    ]
+    // -------------------------------------
 };
 // -------------------------------------------
 
@@ -68,9 +75,20 @@ function AnalysisPage() {
                 <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}> {/* Добавим flexWrap */}
                      <FormControl size="small" sx={{ minWidth: 150 }}>
                         <InputLabel>Тип Сущности</InputLabel>
-                        <Select value={entityType} label="Тип Сущности" onChange={(e) => setEntityType(e.target.value)} disabled> 
+                        <Select value={entityType} label="Тип Сущности" onChange={(e) => {
+                            const newType = e.target.value;
+                            setEntityType(newType);
+                            // Сбрасываем признаки на дефолтные для нового типа
+                            if (newType === 'order') {
+                                setFeatureX('total_amount');
+                                setFeatureY('item_count');
+                            } else if (newType === 'activity_session') {
+                                setFeatureX('action_count');
+                                setFeatureY('session_duration_seconds');
+                            }
+                        }}> 
                             <MenuItem value="order">Заказы (Order)</MenuItem>
-                            {/* <MenuItem value="activity">Активность (Activity)</MenuItem> */}
+                            <MenuItem value="activity_session">Сессии (Activity)</MenuItem>
                         </Select>
                     </FormControl>
                     <FormControl size="small" sx={{ minWidth: 200 }}>

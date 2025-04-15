@@ -4,7 +4,7 @@ import {
     Typography, Paper, Grid, CircularProgress, Alert, Card, CardContent, Button,
     Box, List, ListItem, ListItemText, Divider, Chip, Stack, useTheme, IconButton, ListItemIcon, Collapse,
     Dialog, DialogTitle, DialogContent, DialogActions, TableContainer, Table, TableBody, TableRow, TableCell, Link as MuiLink,
-    Accordion, AccordionSummary, AccordionDetails, Select, MenuItem, FormControl, InputLabel
+    Accordion, AccordionSummary, AccordionDetails, Select, MenuItem, FormControl, InputLabel, TableHead
 } from '@mui/material';
 import { 
     Train, Search, ExpandLess, ExpandMore, ErrorOutline, CheckCircleOutline, Settings, WarningAmberOutlined, InfoOutlined,
@@ -25,9 +25,14 @@ import {
     Title,
     Tooltip,
     Legend,
+    Filler
 } from 'chart.js';
 import { Line, Bar } from 'react-chartjs-2'; // Импортируем типы графиков
 import { alpha } from '@mui/material/styles';
+// --- ИМПОРТИРУЕМ ZOOM ПЛАГИН (если еще не импортирован глобально) ---
+import zoomPlugin from 'chartjs-plugin-zoom';
+import 'hammerjs'; // Для поддержки touch-жестов
+// -----------------------------------------------------------------
 
 // Регистрируем компоненты Chart.js
 ChartJS.register(
@@ -38,7 +43,9 @@ ChartJS.register(
     BarElement,
     Title,
     Tooltip,
-    Legend
+    Legend,
+    Filler,
+    zoomPlugin // <--- Добавляем регистрацию zoomPlugin
 );
 // --------------------------
 
@@ -61,7 +68,9 @@ const getAnomalySettings = () => {
         dbscan_eps: 0.5,
         dbscan_min_samples: 5,
         use_autoencoder: false, // <-- Новый дефолт
-        autoencoder_threshold: 0.5 // <-- Новый дефолт
+        autoencoder_threshold: 0.5, // <-- Новый дефолт
+        use_isolation_forest: true, // <-- Добавляем дефолт для IF
+        use_dbscan: true // <-- Добавляем дефолт для DBSCAN (включен)
     };
     if (savedSettings) {
         try {
@@ -76,6 +85,11 @@ const getAnomalySettings = () => {
                 dbscan_min_samples: parseInt(parsed.dbscan_min_samples, 10) || defaults.dbscan_min_samples,
                 use_autoencoder: typeof parsed.use_autoencoder === 'boolean' ? parsed.use_autoencoder : defaults.use_autoencoder,
                 autoencoder_threshold: parseFloat(parsed.autoencoder_threshold) || defaults.autoencoder_threshold,
+                // --- Читаем use_isolation_forest --- 
+                use_isolation_forest: typeof parsed.use_isolation_forest === 'boolean' ? parsed.use_isolation_forest : defaults.use_isolation_forest,
+                // --- Читаем use_dbscan --- 
+                use_dbscan: typeof parsed.use_dbscan === 'boolean' ? parsed.use_dbscan : defaults.use_dbscan,
+                // ---------------------------------
             };
         } catch (error) {
             console.error("Failed to parse settings from localStorage:", error);
@@ -98,6 +112,45 @@ const getSeverityChipColor = (severity) => {
 // --- Компонент для отображения деталей аномалии в модальном окне ---
 // ТЕПЕРЬ принимает ConsolidatedAnomaly
 const AnomalyDetailsDialogContent = ({ anomaly }) => {
+    const theme = useTheme();
+
+    // --- НОВОЕ: Состояние для истории заказов клиента --- 
+    const [customerOrderHistory, setCustomerOrderHistory] = useState([]);
+    const [loadingHistory, setLoadingHistory] = useState(false);
+    const [errorHistory, setErrorHistory] = useState('');
+    // ----------------------------------------------------
+
+    // --- НОВОЕ: Загрузка истории при открытии для аномалии заказа --- 
+    useEffect(() => {
+        if (anomaly && anomaly.entity_type === 'order') {
+            const fetchHistory = async () => {
+                setLoadingHistory(true);
+                setErrorHistory('');
+                setCustomerOrderHistory([]); // Сбрасываем перед загрузкой
+                try {
+                    // Используем новый эндпоинт и ID заказа
+                    const response = await axios.get(`/api/order_data/orders/${anomaly.entity_id}/context/customer_history`, {
+                         params: { limit: 7 } // Загружаем, например, 7 последних
+                    });
+                    setCustomerOrderHistory(response.data); // Ожидаем List[SimpleOrderHistoryItem]
+                } catch (err) {
+                    console.error("Error fetching customer order history:", err);
+                    setErrorHistory(err.response?.data?.detail || 'Не удалось загрузить историю заказов клиента.');
+                }
+                 finally {
+                    setLoadingHistory(false);
+                 }
+            };
+            fetchHistory();
+        } else {
+             // Сбрасываем историю, если это не аномалия заказа или аномалия не выбрана
+             setCustomerOrderHistory([]);
+             setLoadingHistory(false);
+             setErrorHistory('');
+        }
+    }, [anomaly]); // Перезагружаем при смене аномалии
+    // -------------------------------------------------------------
+
     if (!anomaly) return null;
 
     // Форматируем дату последнего обнаружения
@@ -150,6 +203,55 @@ const AnomalyDetailsDialogContent = ({ anomaly }) => {
                 </Table>
             </TableContainer>
 
+            {/* --- НОВОЕ: Секция Истории Заказов Клиента --- */}
+            {anomaly.entity_type === 'order' && (
+                <Box sx={{ mt: 3 }}>
+                    <Typography variant="subtitle1" gutterBottom>Недавние заказы этого клиента</Typography>
+                    {loadingHistory && <CircularProgress size={20} sx={{ display: 'block', mx: 'auto'}}/>}
+                    {errorHistory && <Alert severity="warning" size="small" sx={{mt: 1}}>{errorHistory}</Alert>}
+                    {!loadingHistory && !errorHistory && customerOrderHistory.length > 0 && (
+                         <TableContainer component={Paper} elevation={0} variant="outlined" sx={{ mt: 1 }}>
+                            <Table size="small" aria-label="customer order history">
+                                <TableHead>
+                                     <TableRow>
+                                        <TableCell>ID Заказа</TableCell>
+                                        <TableCell>Дата</TableCell>
+                                        <TableCell align="right">Сумма</TableCell>
+                                        <TableCell align="right">Кол-во поз.</TableCell>
+                                     </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                    {customerOrderHistory.map((order) => (
+                                        <TableRow 
+                                            key={order.id}
+                                            sx={{
+                                                // Выделяем строку текущей аномалии
+                                                backgroundColor: order.is_current_anomaly 
+                                                    ? alpha(theme.palette.warning.light, 0.3) 
+                                                    : 'inherit',
+                                                '&:last-child td, &:last-child th': { border: 0 }
+                                            }}
+                                        >
+                                            <TableCell component="th" scope="row">
+                                                {order.id}
+                                                {order.is_current_anomaly && <Chip label="Текущая" size="small" color="warning" variant="outlined" sx={{ml: 1, height: 18}}/>}
+                                            </TableCell>
+                                            <TableCell>{format(parseISO(order.created_at), 'dd.MM.yy HH:mm', { locale: ru })}</TableCell>
+                                            <TableCell align="right">{order.total_amount?.toFixed(2) ?? '-'}</TableCell>
+                                            <TableCell align="right">{order.item_count}</TableCell>
+                                        </TableRow>
+                                    ))}
+                                </TableBody>
+                            </Table>
+                        </TableContainer>
+                    )}
+                    {!loadingHistory && !errorHistory && customerOrderHistory.length === 0 && anomaly.entity_type === 'order' && (
+                        <Typography variant="body2" color="text.secondary" sx={{mt: 1}}>Нет данных о других заказах этого клиента.</Typography>
+                    )}
+                </Box>
+            )}
+            {/* ------------------------------------------------- */}
+
             {/* --- Детали по каждому детектору (используем аккордеон) --- */}
             <Typography variant="subtitle1" gutterBottom sx={{ mt: 3 }}>Сработавшие Детекторы</Typography>
             {anomaly.triggered_detectors && anomaly.triggered_detectors.length > 0 ? (
@@ -169,21 +271,131 @@ const AnomalyDetailsDialogContent = ({ anomaly }) => {
                          let detailsContent = null;
                          if (detectorInfo.details !== null && detectorInfo.details !== undefined) {
                             if (typeof detectorInfo.details === 'object') {
+                                // --- Проверка на Autoencoder и feature_errors --- 
+                                const isAutoencoder = detectorInfo.detector_name === 'autoencoder';
+                                const featureErrors = isAutoencoder ? detectorInfo.details.feature_errors : null;
+                                const otherDetails = { ...detectorInfo.details };
+                                if (featureErrors) {
+                                    delete otherDetails.feature_errors; // Удаляем ошибки из "основных" деталей
+                                }
+                                // ----------------------------------------------
+
                                 detailsContent = (
-                                    <TableContainer component={Paper} elevation={0} variant="outlined" sx={{ mt: 1 }}>
+                                     <Box>
+                                         {/* Отображаем остальные детали */} 
+                                         {Object.keys(otherDetails).length > 0 && (
+                                             <TableContainer component={Paper} elevation={0} variant="outlined" sx={{ mt: 1, mb: featureErrors ? 2 : 0 }}>
                                         <Table size="small">
                                             <TableBody>
-                                                {Object.entries(detectorInfo.details).map(([key, value]) => (
+                                                        {Object.entries(otherDetails).map(([key, value]) => (
                                                     <TableRow key={key}>
-                                                        <TableCell sx={{fontWeight: 'bold', width: '40%', py: 0.5 }}>{String(key)}:</TableCell>
-                                                        <TableCell sx={{ py: 0.5 }}>{String(value)}</TableCell>
+                                                                <TableCell sx={{fontWeight: 'bold', width: '40%', py: 0.5 }}>{String(key).replace(/_/g, ' ')}:</TableCell> {/* Улучшаем читаемость ключа */} 
+                                                                <TableCell sx={{ py: 0.5 }}>{typeof value === 'number' ? value.toFixed(4) : String(value)}</TableCell> {/* Форматируем числа */} 
                                                     </TableRow>
                                                 ))}
                                             </TableBody>
                                         </Table>
                                     </TableContainer>
+                                         )}
+
+                                        {/* Отображаем ошибки по признакам для Autoencoder */} 
+                                        {featureErrors && (
+                                             <>
+                                                <Typography variant="subtitle2" gutterBottom sx={{ mt: 1.5, color: 'text.secondary' }}>
+                                                     Ошибки реконструкции по признакам (MAE):
+                                                </Typography>
+                                                <TableContainer component={Paper} elevation={0} variant="outlined" sx={{ mt: 1, maxHeight: 200, overflowY: 'auto' }}>
+                                                    <Table size="small" stickyHeader>
+                                                        {/* Сортируем признаки по убыванию ошибки */}
+                                                         {Object.entries(featureErrors)
+                                                            .sort(([, errorA], [, errorB]) => errorB - errorA)
+                                                            .map(([feature, error]) => (
+                                                                <TableRow key={feature}>
+                                                                    <TableCell sx={{fontWeight: 'medium', width: '60%', py: 0.5 }}>{feature}:</TableCell>
+                                                                    <TableCell sx={{ py: 0.5, color: error > 0 ? 'error.main' : 'inherit' }}>{error.toFixed(4)}</TableCell>
+                                                                </TableRow>
+                                                            ))}
+                                                    </Table> 
+                                                </TableContainer>
+                                            </>
+                                        )}
+                                        {/* --- ЗАМЕНЯЕМ ТАБЛИЦУ SHAP НА Bar Chart --- */}
+                                        {detectorInfo.detector_name === 'isolation_forest' && detectorInfo.details?.shap_values && (
+                                             <>
+                                                <Typography variant="subtitle2" gutterBottom sx={{ mt: 1.5, color: 'text.secondary' }}>
+                                                     Вклад признаков (SHAP values):
+                                                </Typography>
+                                                {/* Подготовка данных для графика */} 
+                                                {(() => {
+                                                    const shapEntries = Object.entries(detectorInfo.details.shap_values)
+                                                        .sort(([, valA], [, valB]) => Math.abs(valB) - Math.abs(valA))
+                                                        .slice(0, 15); // Показываем топ-15 признаков
+                                                    
+                                                    const chartLabels = shapEntries.map(([feature]) => feature);
+                                                    const chartDataValues = shapEntries.map(([, value]) => value);
+                                                    const backgroundColors = chartDataValues.map(value => 
+                                                        value < 0 ? 'rgba(255, 99, 132, 0.6)' : 'rgba(75, 192, 192, 0.6)' // Красный для отриц., Бирюзовый для полож.
+                                                    );
+                                                    const borderColors = chartDataValues.map(value => 
+                                                        value < 0 ? 'rgba(255, 99, 132, 1)' : 'rgba(75, 192, 192, 1)'
+                                                    );
+
+                                                    const chartData = {
+                                                        labels: chartLabels,
+                                                        datasets: [
+                                                            {
+                                                                label: 'SHAP Value',
+                                                                data: chartDataValues,
+                                                                backgroundColor: backgroundColors,
+                                                                borderColor: borderColors,
+                                                                borderWidth: 1,
+                                                            },
+                                                        ],
+                                                    };
+
+                                                    const chartOptions = {
+                                                        indexAxis: 'y', // Горизонтальный бар
+                                                        responsive: true,
+                                                        maintainAspectRatio: false,
+                                                        plugins: {
+                                                            legend: {
+                                                                display: false, // Легенда не нужна
+                                                            },
+                                                            tooltip: {
+                                                                callbacks: {
+                                                                    label: function(context) {
+                                                                        return ` ${context.dataset.label}: ${context.raw.toFixed(4)}`;
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        scales: {
+                                                            x: {
+                                                                title: {
+                                                                    display: true,
+                                                                    text: 'SHAP Value (влияние на оценку аномальности)',
+                                                                    font: { size: 10 }
+                                                                },
+                                                                ticks: { font: { size: 9 } }
+                                                            },
+                                                            y: {
+                                                                 ticks: { font: { size: 9 } } 
+                                                            }
+                                                        }
+                                                    };
+
+                                                    return (
+                                                        <Box sx={{ height: '300px', mt: 1 }}> {/* Задаем высоту контейнера графика */} 
+                                                            <Bar options={chartOptions} data={chartData} />
+                                                        </Box>
+                                                    );
+                                                })()}
+                                            </>
+                                        )}
+                                        {/* --------------------------------------------- */}
+                                    </Box>
                                 );
-                            } else {
+                            } else { // Если details не объект
                                 detailsContent = (
                                     <Paper elevation={0} variant="outlined" sx={{ p: 1, mt: 1, bgcolor: 'grey.50' }}>
                                         <pre style={{ margin: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
@@ -298,6 +510,9 @@ const AnomalyDetailsModal = ({ open, onClose, anomalyDetails, loading, error }) 
 
 // --- Импорт нового компонента графика --- 
 import ScoreDistributionChart from '../components/ScoreDistributionChart';
+// --- ДОБАВЛЯЕМ Pagination --- 
+import Pagination from '@mui/material/Pagination';
+// -------------------------
 
 function DashboardPage() {
     const theme = useTheme();
@@ -312,6 +527,11 @@ function DashboardPage() {
     const [anomalies, setAnomalies] = useState([]);
     const [loadingAnomalies, setLoadingAnomalies] = useState(true);
     const [errorAnomalies, setErrorAnomalies] = useState('');
+    // --- СОСТОЯНИЕ ДЛЯ ПАГИНАЦИИ АНОМАЛИЙ --- 
+    const [currentPage, setCurrentPage] = useState(1);
+    const [anomaliesPerPage, setAnomaliesPerPage] = useState(15); // Кол-во аномалий на странице
+    const [totalAnomalies, setTotalAnomalies] = useState(0);
+    // ----------------------------------------
 
     // Состояние для процесса детекции
     const [detecting, setDetecting] = useState(false);
@@ -445,6 +665,18 @@ function DashboardPage() {
                 display: true,
                 // Текст заголовка будет задан отдельно для каждого графика
             },
+            tooltip: {
+                callbacks: {
+                    title: function(tooltipItems) {
+                        // Показываем дату/интервал в заголовке тултипа
+                        return `Дата: ${tooltipItems[0].label}`;
+                    },
+                    label: function(context) {
+                        // Показываем значение в основной строке
+                        return ` Активность: ${context.parsed.y}`;
+                    }
+                }
+            },
         },
         scales: {
              y: {
@@ -477,27 +709,40 @@ function DashboardPage() {
     }, []);
 
     // --- Функция для ЗАГРУЗКИ КОНСОЛИДИРОВАННЫХ аномалий --- 
-    const fetchAnomalies = useCallback(async () => {
+    // --- ОБНОВЛЯЕМ для пагинации --- 
+    const fetchAnomalies = useCallback(async (page = 1) => {
         setLoadingAnomalies(true);
         setErrorAnomalies('');
-        setAnomalies([]); // Очищаем перед загрузкой
+        // Не очищаем anomalies, чтобы не было мерцания при переключении страниц?
+        // Или очищать? Пока не будем: // setAnomalies([]); 
+        
+        const limit = anomaliesPerPage;
+        const skip = (page - 1) * limit;
+
         try {
-            // Используем тот же эндпоинт GET /
-            const response = await axios.get('/api/anomalies/', { params: { limit: 100 } }); // Запрашиваем первые 100 консолидированных
-            // Ожидаем List[ConsolidatedAnomaly]
-            if (Array.isArray(response?.data)) {
-                setAnomalies(response.data);
+            // Используем эндпоинт, который теперь возвращает { total_count, anomalies }
+            const response = await axios.get('/api/anomalies/', { params: { skip: skip, limit: limit } });
+            // Ожидаем объект ConsolidatedAnomalyResponse
+            if (response?.data && Array.isArray(response.data.anomalies) && typeof response.data.total_count === 'number') {
+                setAnomalies(response.data.anomalies);
+                setTotalAnomalies(response.data.total_count);
+                setCurrentPage(page); // Устанавливаем текущую страницу
             } else {
-                 console.error("Received non-array data for consolidated anomalies", response?.data);
+                 console.error("Received unexpected data format for paginated anomalies", response?.data);
                  setErrorAnomalies("Некорректный формат данных аномалий.");
+                 setAnomalies([]); // Очищаем в случае ошибки формата
+                 setTotalAnomalies(0);
             }
         } catch (err) {
             console.error("Error fetching anomalies:", err);
             setErrorAnomalies(err.response?.data?.detail || 'Не удалось загрузить список аномалий.');
+            setAnomalies([]); // Очищаем при ошибке загрузки
+            setTotalAnomalies(0);
         } finally {
             setLoadingAnomalies(false);
         }
-    }, []);
+    }, [anomaliesPerPage]); // Добавляем зависимость
+    // -------------------------------------------------------------------
 
     // НОВЫЕ ФУНКЦИИ ЗАГРУЗКИ ДАННЫХ ДЛЯ ГРАФИКОВ
     const fetchActivityTimeline = useCallback(async (interval = 'day') => {
@@ -559,7 +804,7 @@ function DashboardPage() {
     // Загрузка всех данных при монтировании
     useEffect(() => {
         fetchDashboardData();
-        fetchAnomalies();
+        fetchAnomalies(1); // Загружаем первую страницу аномалий
         fetchActivityTimeline(); // Загружаем график активности (по дням по умолчанию)
         fetchAnomalySummary();   // Загружаем сводку аномалий
         // Загружаем скоры для детектора по умолчанию при монтировании
@@ -621,43 +866,61 @@ function DashboardPage() {
             setDetectionResult({ success: false, message: errorMsg });
         }
         finally {
-            setLoadingDetectActivity(false);
+        setLoadingDetectActivity(false);
         }
     };
 
     // --- Обработчик детекции (Order) --- 
+    // --- ОБНОВЛЯЕМ, чтобы использовать настройки --- 
     const handleDetectOrderAnomalies = async () => {
-        // --- РЕАЛИЗАЦИЯ ЛОГИКИ ---
-        setLoadingDetectOrder(true); // Используем отдельное состояние
-        setDetectionResult(null); // Сбрасываем предыдущий результат
-        setDetectError('');     // Сбрасываем предыдущую ошибку
+        setLoadingDetectOrder(true); 
+        setDetectionResult(null); 
+        setDetectError('');     
         try {
             const currentSettings = getAnomalySettings();
             console.log('Current settings for Order detection:', currentSettings);
 
-            // Для заказов пока используем только статистический детектор
+            // --- Собираем алгоритмы для заказа --- 
             const algorithmsToRun = ['statistical_zscore']; 
-            console.log('Algorithms to run for Order:', algorithmsToRun);
-
-            const response = await axios.post('/api/anomalies/detect', {
+            if (currentSettings.use_isolation_forest) {
+                algorithmsToRun.push('isolation_forest');
+            }
+            // --- Добавляем проверку DBSCAN --- 
+            if (currentSettings.use_dbscan) { 
+                 algorithmsToRun.push('dbscan');
+            }
+            // --------------------------------
+            if (currentSettings.use_autoencoder) {
+                algorithmsToRun.push('autoencoder');
+            }
+            const uniqueAlgos = [...new Set(algorithmsToRun)]; 
+            console.log('Algorithms to run for Order:', uniqueAlgos);
+            // -------------------------------------
+            
+            // --- Передаем все нужные параметры --- 
+            const payload = {
                 entity_type: 'order',
-                algorithms: algorithmsToRun,
+                algorithms: uniqueAlgos, 
                 limit: currentSettings.limit,
                 z_threshold: currentSettings.z_threshold,
-                // dbscan и autoencoder параметры здесь не нужны
-            });
+                dbscan_eps: currentSettings.dbscan_eps, 
+                dbscan_min_samples: currentSettings.dbscan_min_samples, 
+                autoencoder_threshold: currentSettings.autoencoder_threshold 
+            };
+            // -------------------------------------
+
+            const response = await axios.post('/api/anomalies/detect', payload);
             console.log("Order detection response:", response.data);
             setDetectionResult({ success: true, data: response.data });
-            fetchAnomalies(); // Обновляем список аномалий после успешной детекции
+            fetchAnomalies(currentPage); // Обновляем список аномалий, оставаясь на текущей странице
         } catch (error) { 
             console.error("Error detecting order anomalies:", error);
             const errorMsg = error.response?.data?.detail || error.message || 'Failed to run order anomaly detection';
             setDetectionResult({ success: false, message: errorMsg });
-            setDetectError(errorMsg); // Сохраняем ошибку для отображения
+            setDetectError(errorMsg); 
         } finally {
-            setLoadingDetectOrder(false); // Гарантированно сбрасываем состояние загрузки
+            setLoadingDetectOrder(false); 
         }
-        // --------------------------
     };
 
     // --- Обработчик клика по строке аномалии --- 
@@ -725,6 +988,12 @@ function DashboardPage() {
     };
     // ------------------------------------
 
+    // --- ОБРАБОТЧИК СМЕНЫ СТРАНИЦЫ ПАГИНАЦИИ --- 
+    const handlePageChange = (event, newPage) => {
+        fetchAnomalies(newPage);
+    };
+    // ---------------------------------------------
+
     return (
         <Grid container spacing={3}>
             {/* Сводка */}
@@ -740,7 +1009,7 @@ function DashboardPage() {
                     {summary && (
                         <Grid container spacing={2} sx={{ mt: 1 }}>
                             {Object.entries(summary).map(([key, value]) => (
-                                <Grid item xs={12} sm={6} md={4} lg={2.4} key={key}> {/* Adjust lg for 5 items */}
+                                <Grid xs={12} sm={6} md={4} lg={2.4} key={key}> {/* Adjust lg for 5 items */}
                                     <Card>
                                         <CardContent>
                                             <Typography variant="h6" component="div" sx={{ textTransform: 'capitalize', fontSize: '0.9rem' }}>
@@ -759,7 +1028,7 @@ function DashboardPage() {
             </Grid>
 
             {/* НОВАЯ СЕКЦИЯ ДЛЯ ГРАФИКОВ */}
-            <Grid item xs={12} md={7}> {/* Занимает большую часть ширины */}
+            <Grid xs={12} md={7}> {/* Занимает большую часть ширины */}
                 <Paper elevation={3} sx={{ p: 2, height: '400px' }}>
                     <Typography variant="h6" gutterBottom>Активность пользователей (по дням)</Typography>
                     {loadingTimeline && <CircularProgress sx={{ display: 'block', margin: 'auto' }} />}
@@ -771,7 +1040,36 @@ function DashboardPage() {
                                     ...chartOptions,
                                     plugins: {
                                          ...chartOptions.plugins,
-                                         title: { ...chartOptions.plugins.title, text: 'Динамика активности' }
+                                         title: { ...chartOptions.plugins.title, text: 'Динамика активности' },
+                                         // --- ДОБАВЛЯЕМ/ИЗМЕНЯЕМ ТУЛТИП ДЛЯ LINE CHART --- 
+                                         tooltip: {
+                                             callbacks: {
+                                                 title: function(tooltipItems) {
+                                                     // Показываем дату/интервал в заголовке тултипа
+                                                     return `Дата: ${tooltipItems[0].label}`;
+                                                 },
+                                                 label: function(context) {
+                                                     // Показываем значение в основной строке
+                                                     return ` Активность: ${context.parsed.y}`;
+                                                 }
+                                             }
+                                         },
+                                         // -------------------------------------------------
+                                         zoom: {
+                                             pan: {
+                                                 enabled: true,
+                                                 mode: 'x', // Для таймлайна панорамирование по X более логично
+                                                 threshold: 5,
+                                             },
+                                             zoom: {
+                                                 wheel: { enabled: true },
+                                                 pinch: { enabled: true },
+                                                 mode: 'x', // Масштабируем тоже по оси X
+                                             },
+                                             limits: {
+                                                // x: {min: 'original', max: 'original'} // Ограничения, если нужны
+                                             }
+                                         }
                                     }
                                 }}
                                 data={activityTimelineChartData}
@@ -780,7 +1078,7 @@ function DashboardPage() {
                     )}
                 </Paper>
             </Grid>
-            <Grid item xs={12} md={5}> {/* Занимает оставшуюся часть */}
+            <Grid xs={12} md={5}> {/* Занимает оставшуюся часть */}
                  <Paper elevation={3} sx={{ p: 2, height: '400px' }}>
                     <Typography variant="h6" gutterBottom>Сводка по Аномалиям</Typography>
                     {loadingAnomalySummary && <CircularProgress sx={{ display: 'block', margin: 'auto' }} />}
@@ -793,7 +1091,21 @@ function DashboardPage() {
                                      plugins: {
                                          ...chartOptions.plugins,
                                          title: { ...chartOptions.plugins.title, text: 'Аномалии по детекторам' },
-                                         legend: { display: false } // Легенда не нужна для одного датасета
+                                         legend: { display: false }, // Легенда не нужна для одного датасета
+                                         // --- ДОБАВЛЯЕМ/ИЗМЕНЯЕМ ТУЛТИП ДЛЯ BAR CHART --- 
+                                         tooltip: {
+                                            callbacks: {
+                                                title: function(tooltipItems) {
+                                                    // Показываем имя детектора в заголовке
+                                                    return `Детектор: ${tooltipItems[0].label}`;
+                                                },
+                                                label: function(context) {
+                                                    // Показываем количество аномалий
+                                                    return ` Кол-во аномалий: ${context.parsed.x}`;
+                                                }
+                                            }
+                                        }
+                                        // ------------------------------------------------
                                     },
                                      indexAxis: 'y',
                                 }}
@@ -806,7 +1118,7 @@ function DashboardPage() {
             {/* --------------------------------- */}
 
             {/* Управление и Отображение Аномалий */}
-            <Grid item xs={12}>
+            <Grid xs={12}>
                 <Paper elevation={3} sx={{ p: 3 }}>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 2 }}>
                         <Typography variant="h5" gutterBottom sx={{ mb: 0 }}>
@@ -916,7 +1228,6 @@ function DashboardPage() {
                                 return (
                                     <ListItem 
                                         key={`${anomaly.entity_type}-${anomaly.entity_id}-${index}`} // Генерируем ключ
-                                        button 
                                         onClick={() => handleToggleAnomaly(anomaly)} // Открывает окно с ConsolidatedAnomaly
                                         sx={{ borderBottom: '1px solid', borderColor: 'divider', alignItems: 'center', py: 1.5 }}
                                     >
@@ -933,6 +1244,20 @@ function DashboardPage() {
                             })}
                         </List>
                     )}
+                    {/* --- ДОБАВЛЯЕМ КОМПОНЕНТ ПАГИНАЦИИ --- */}
+                    {!loadingAnomalies && totalAnomalies > 0 && totalAnomalies > anomaliesPerPage && (
+                         <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3, pb: 2 }}>
+                            <Pagination 
+                                count={Math.ceil(totalAnomalies / anomaliesPerPage)} 
+                                page={currentPage}
+                                onChange={handlePageChange}
+                                color="primary" 
+                                showFirstButton 
+                                showLastButton
+                            />
+                        </Box>
+                    )}
+                    {/* ------------------------------------ */}
                 </Paper>
             </Grid>
             
@@ -969,7 +1294,7 @@ function DashboardPage() {
             />
             
             {/* --- График Распределения Скоров Аномальности --- */}
-            <Grid item xs={12} md={6}>
+            <Grid xs={12} md={6}>
                 <Paper elevation={3} sx={{ p: 2, borderRadius: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
                         <Typography variant="h6" gutterBottom sx={{ fontWeight: 'medium' }}>
@@ -991,11 +1316,11 @@ function DashboardPage() {
                         </FormControl>
                     </Box>
                     {/* Вставляем компонент гистограммы */}
-                    <ScoreDistributionChart
-                        scores={scoreData}
-                        detectorName={selectedDetector}
-                        isLoading={scoreLoading}
-                        error={scoreError}
+                    <ScoreDistributionChart 
+                        scores={scoreData} 
+                        detectorName={selectedDetector} 
+                        isLoading={scoreLoading} 
+                        error={scoreError} 
                         thresholdValue={currentThreshold}
                     />
                 </Paper>

@@ -285,24 +285,47 @@ class AutoencoderDetector:
                 if activity_id is None: continue
                 
                 error_value = anomalies_errors.loc[idx, 'reconstruction_error']
+
+                # --- ВЫЧИСЛЕНИЕ ОШИБОК ПО ПРИЗНАКАМ --- 
+                original_features = df_prepared.loc[idx]
+                reconstructed_features = reconstructions[df_prepared.index.get_loc(idx)]
+                # Используем Mean Absolute Error (MAE) для ошибок по признакам
+                feature_mae_errors = np.abs(original_features - reconstructed_features)
+                # Преобразуем в словарь {имя_признака: ошибка}
+                feature_errors_dict = feature_mae_errors.to_dict()
+                # Округляем значения для читаемости
+                feature_errors_dict = {k: round(float(v), 4) for k, v in feature_errors_dict.items()}
+                # ---------------------------------------------
                 
-                # --- Определение Severity ---
-                # Можно сделать зависимым от величины ошибки относительно порога
-                severity = "Medium" # По умолчанию
-                if error_value > threshold * 2.0: # Пример: ошибка вдвое выше порога = High
-                     severity = "High"
-                     
-                # --- ИСПРАВЛЕНО: Reason на русском --- 
+                top_error_features_str = ""
+                if feature_errors_dict:
+                    sorted_errors = sorted(feature_errors_dict.items(), key=lambda item: item[1], reverse=True)
+                    top_features = [f"{k} (ош: {v:.3f})" for k, v in sorted_errors[:2]] # Берем топ-2
+                    top_error_features_str = f", в основном из-за: {', '.join(top_features)}"
+                # ---------------------------------------------------------------------------
+
+                severity = "Medium"
+                if error_value > threshold * 1.5: severity = "High"
+                
+                # --- ИЗМЕНЕНО: Добавляем топ признаки в reason ---
                 reason_str = (
-                    f"Высокая ошибка реконструкции ({error_value:.4f}) с помощью Автоэнкодера, превышает порог ({threshold:.4f}). "
-                    f"Указывает, что признаки точки необычны по сравнению с изученными нормальными паттернами."
+                    f"Активность (ID: {activity_id}) имеет высокую ошибку реконструкции ({error_value:.4f}) Автоэнкодером, превышает порог ({threshold:.4f}). "
+                    f"Указывает на необычное сочетание признаков активности{top_error_features_str}."
                 )
-                # -------------------------------------
+                # ---------------------------------------------------
+                
+                # --- ДОБАВЛЯЕМ ОШИБКИ ПО ПРИЗНАКАМ В DETAILS --- 
+                anomaly_details = {
+                    "reconstruction_error": float(error_value),
+                    "threshold": threshold,
+                    "feature_errors": feature_errors_dict
+                }
+                # ------------------------------------------------
 
                 output_anomalies.append({
                     "activity_id": int(activity_id),
                     "reason": reason_str,
-                    "details": {"reconstruction_error": float(error_value), "threshold": threshold},
+                    "details": anomaly_details, # <--- Используем обновленные details
                     "severity": severity,
                     "anomaly_score": float(error_value) # Используем саму ошибку как score
                 })

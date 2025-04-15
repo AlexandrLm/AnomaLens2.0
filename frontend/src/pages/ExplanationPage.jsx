@@ -42,7 +42,11 @@ function ExplanationPage() {
             <ListItem>3. Если абсолютное значение |Z| превышает заданный порог (например, 3), то наблюдение считается аномальным по этому признаку. Это означает, что значение признака находится более чем в 3 стандартных отклонениях от среднего, что маловероятно для нормального распределения.</ListItem>
           </List>
         </Typography>
-        <Typography variant="body2" color="text.secondary" paragraph>
+        <Typography variant="subtitle2" sx={{ mt: 1, fontWeight: 'bold' }}>Настраиваемые параметры:</Typography>
+        <List dense sx={{ pl: 2, listStyleType: 'disc', '& .MuiListItem-root': { display: 'list-item' } }}>
+            <ListItem sx={{ py: 0.5 }}><strong>Порог Z-оценки (`z_threshold`):</strong> Определяет, насколько далеко от среднего (в стандартных отклонениях) должно быть значение, чтобы считаться аномалией. Увеличение порога делает детектор менее чувствительным.</ListItem>
+        </List>
+        <Typography variant="body2" color="text.secondary" paragraph sx={{ mt: 2 }}>
           <strong>Хорошо подходит для:</strong> Обнаружения выбросов в числовых данных, когда аномалии представляют собой значения, значительно отличающиеся от среднего (слишком большие или слишком маленькие). Прост в реализации и интерпретации.
         </Typography>
         <Typography variant="body2" color="text.secondary">
@@ -98,7 +102,12 @@ function ExplanationPage() {
             <ListItem>4. Точки, которые не являются ядерными и не достижимы из других ядерных точек, считаются шумом (аномалиями) и помечаются специальной меткой (обычно -1).</ListItem>
           </List>
         </Typography>
-        <Typography variant="body2" color="text.secondary" paragraph>
+        <Typography variant="subtitle2" sx={{ mt: 1, fontWeight: 'bold' }}>Настраиваемые параметры:</Typography>
+        <List dense sx={{ pl: 2, listStyleType: 'disc', '& .MuiListItem-root': { display: 'list-item' } }}>
+            <ListItem sx={{ py: 0.5 }}><strong>Радиус окрестности (`dbscan_eps`):</strong> Максимальное расстояние между двумя точками, чтобы одна считалась соседом другой. Увеличение расширяет кластеры.</ListItem>
+            <ListItem sx={{ py: 0.5 }}><strong>Минимальное число соседей (`dbscan_min_samples`):</strong> Количество точек, которое должно быть в окрестности точки (включая саму точку), чтобы она считалась ядром кластера. Увеличение делает детектор более строгим к шуму.</ListItem>
+        </List>
+        <Typography variant="body2" color="text.secondary" paragraph sx={{ mt: 2 }}>
           <strong>Хорошо подходит для:</strong> Обнаружения аномалий в виде "шума", который не формирует плотных скоплений. Способен находить кластеры произвольной формы, в отличие от методов вроде K-Means.
         </Typography>
         <Typography variant="body2" color="text.secondary">
@@ -127,7 +136,12 @@ function ExplanationPage() {
             <ListItem>6. Наблюдения с ошибкой реконструкции выше определенного порога помечаются как аномалии.</ListItem>
           </List>
         </Typography>
-        <Typography variant="body2" color="text.secondary" paragraph>
+        <Typography variant="subtitle2" sx={{ mt: 1, fontWeight: 'bold' }}>Настраиваемые параметры:</Typography>
+        <List dense sx={{ pl: 2, listStyleType: 'disc', '& .MuiListItem-root': { display: 'list-item' } }}>
+            <ListItem sx={{ py: 0.5 }}><strong>Использовать автоэнкодер (`use_autoencoder`):</strong> Включает или отключает использование этого детектора (применяется при запуске детекции для 'activity').</ListItem>
+            <ListItem sx={{ py: 0.5 }}><strong>Порог ошибки реконструкции (`autoencoder_threshold`):</strong> Максимально допустимое значение ошибки реконструкции, при котором точка считается нормальной. Увеличение порога делает детектор менее чувствительным.</ListItem>
+        </List>
+        <Typography variant="body2" color="text.secondary" paragraph sx={{ mt: 2 }}>
           <strong>Хорошо подходит для:</strong> Обнаружения сложных, нелинейных аномалий, которые отклоняются от изученных "нормальных" паттернов данных. Может выявлять аномалии, структура которых заранее неизвестна. Полезен, когда "нормальное" поведение хорошо определено, а аномалии редки и разнообразны.
         </Typography>
         <Typography variant="body2" color="text.secondary">

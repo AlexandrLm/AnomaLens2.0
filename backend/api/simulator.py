@@ -5,6 +5,7 @@ from typing import Dict
 
 from ..database import get_db
 from ..simulator import generator # Импортируем наш генератор
+from ..schemas import SimulatorRequest # Импортируем новую схему
 
 router = APIRouter()
 
@@ -15,10 +16,12 @@ class GenerationConfig(BaseModel):
     num_activities: int = Field(1000, ge=0, description="Number of user activities to generate")
     order_anomaly_rate: float = Field(0.05, ge=0.0, le=1.0, description="Approximate fraction of orders with anomalous amounts (0.0 to 1.0)")
     activity_anomaly_rate: float = Field(0.05, ge=0.0, le=1.0, description="Approximate fraction of activity generation attempts that result in anomalies (bursts, failed logins) (0.0 to 1.0)")
+    activity_start_date: str = Field(..., description="Start date of activity generation")
+    activity_end_date: str = Field(..., description="End date of activity generation")
 
 @router.post("/generate", response_model=Dict[str, int], status_code=status.HTTP_201_CREATED)
 def generate_test_data(
-    config: GenerationConfig = Body(..., embed=True, description="Configuration for data generation including anomaly rates"),
+    config: SimulatorRequest = Body(..., embed=True, description="Configuration for data generation including anomaly rates"),
     db: Session = Depends(get_db)
 ):
     """
@@ -34,8 +37,14 @@ def generate_test_data(
             num_products=config.num_products,
             num_orders=config.num_orders,
             num_activities=config.num_activities,
-            order_anomaly_rate=config.order_anomaly_rate,
-            activity_anomaly_rate=config.activity_anomaly_rate
+            enable_order_amount_anomaly=config.enable_order_amount_anomaly,
+            order_amount_anomaly_rate=config.order_amount_anomaly_rate,
+            enable_activity_burst_anomaly=config.enable_activity_burst_anomaly,
+            activity_burst_anomaly_rate=config.activity_burst_anomaly_rate,
+            enable_failed_login_anomaly=config.enable_failed_login_anomaly,
+            failed_login_anomaly_rate=config.failed_login_anomaly_rate,
+            activity_start_date=config.activity_start_date,
+            activity_end_date=config.activity_end_date
         )
         return summary
     except Exception as e:

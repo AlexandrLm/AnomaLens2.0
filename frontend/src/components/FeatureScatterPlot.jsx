@@ -7,6 +7,8 @@ import {
     Tooltip,
     Legend,
 } from 'chart.js';
+import zoomPlugin from 'chartjs-plugin-zoom';
+import 'hammerjs'; // Для поддержки touch-жестов
 import { Scatter } from 'react-chartjs-2';
 import {
     Box, Typography, CircularProgress, Alert, useTheme
@@ -20,6 +22,9 @@ ChartJS.register(
     Tooltip,
     Legend
 );
+
+// Отдельно регистрируем плагин зума
+ChartJS.register(zoomPlugin);
 
 function FeatureScatterPlot({ data, featureXName, featureYName }) {
     const theme = useTheme();
@@ -75,17 +80,40 @@ function FeatureScatterPlot({ data, featureXName, featureYName }) {
             tooltip: {
                 callbacks: {
                     label: function(context) {
-                        let label = context.dataset.label || '';
-                        if (label) {
-                            label += ': ';
-                        }
                         const point = context.raw;
-                        if (point) {
-                            label += `ID ${point.id}, X: ${point.x}, Y: ${point.y}`;
-                        }
-                        return label;
+                        const datasetLabel = context.dataset.label || 'Точка';
+                        if (!point) return datasetLabel;
+                        
+                        const xLabel = context.chart.options.scales.x.title.text || 'X';
+                        const yLabel = context.chart.options.scales.y.title.text || 'Y';
+                        
+                        const xValueFormatted = typeof point.x === 'number' ? point.x.toLocaleString() : point.x; 
+                        const yValueFormatted = typeof point.y === 'number' ? point.y.toLocaleString() : point.y;
+                        
+                        return `${datasetLabel} (ID: ${point.id}): ${xLabel}=${xValueFormatted}, ${yLabel}=${yValueFormatted}`;
                     }
                 }
+            },
+            zoom: {
+                pan: {
+                    enabled: true,
+                    mode: 'xy', // Разрешаем панорамирование по обеим осям
+                    threshold: 5, // Порог срабатывания (пиксели)
+                },
+                zoom: {
+                    wheel: { // Масштабирование колесиком мыши
+                        enabled: true,
+                    },
+                    pinch: { // Масштабирование щипком (touch)
+                        enabled: true
+                    },
+                    mode: 'xy', // Разрешаем масштабирование по обеим осям
+                },
+                 limits: {
+                    // Можно задать ограничения на масштабирование, если нужно
+                    // x: {min: 0, max: 1000000},
+                    // y: {min: 0, max: 10}
+                 }
             }
         },
         scales: {
@@ -95,14 +123,28 @@ function FeatureScatterPlot({ data, featureXName, featureYName }) {
                     text: featureXName.replace(/_/g, ' ') // Заменяем _ на пробелы для читаемости
                 },
                 type: 'linear', // Явно указываем тип оси
-                position: 'bottom'
+                position: 'bottom',
+                ticks: {
+                    callback: function(value, index, ticks) {
+                        if (Math.abs(value) >= 1e6) return (value / 1e6).toFixed(1) + 'M';
+                        if (Math.abs(value) >= 1e3) return (value / 1e3).toFixed(0) + 'K';
+                        return value; // Возвращаем как есть для меньших чисел
+                    }
+                }
             },
             y: {
                 title: {
                     display: true,
                     text: featureYName.replace(/_/g, ' ')
                 },
-                type: 'linear'
+                type: 'linear',
+                ticks: {
+                    callback: function(value, index, ticks) {
+                        if (Math.abs(value) >= 1e6) return (value / 1e6).toFixed(1) + 'M';
+                        if (Math.abs(value) >= 1e3) return (value / 1e3).toFixed(0) + 'K';
+                        return value;
+                    }
+                }
             }
         }
     }), [featureXName, featureYName]);

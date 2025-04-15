@@ -200,11 +200,20 @@ class SimulatorRequest(BaseModel):
     num_products: int = Field(50, ge=1)
     num_activities: int = Field(1000, ge=1)
     num_orders: int = Field(200, ge=1)
-    anomaly_rate: float = Field(0.02, ge=0, le=1)
-    # Параметры для аномалий в заказах
-    high_order_amount_threshold: float = Field(500.0, ge=0)
-    high_item_count_threshold: int = Field(10, ge=1)
-    order_anomaly_rate: float = Field(0.03, ge=0, le=1)
+    # --- Новые параметры для Аномалий Заказов ---
+    enable_order_amount_anomaly: bool = Field(True, description="Включить аномалии суммы заказа")
+    order_amount_anomaly_rate: float = Field(0.03, ge=0, le=1, description="Доля заказов с аномальной суммой")
+    # high_order_amount_threshold: float = Field(500.0, ge=0) # Порог пока уберем, пусть генерирует просто большие/маленькие
+    # high_item_count_threshold: int = Field(10, ge=1) # Аномалии кол-ва товаров пока не делаем
+    
+    # --- Новые параметры для Аномалий Активности ---
+    enable_activity_burst_anomaly: bool = Field(True, description="Включить аномалии burst-активности")
+    activity_burst_anomaly_rate: float = Field(0.02, ge=0, le=1, description="Доля аномальных burst-сессий среди всех попыток генерации активностей")
+    enable_failed_login_anomaly: bool = Field(True, description="Включить аномалии неудачных логинов")
+    failed_login_anomaly_rate: float = Field(0.01, ge=0, le=1, description="Доля аномальных сессий с неудачными логинами среди всех попыток генерации активностей")
+    # --- Добавляем даты для активностей --- 
+    activity_start_date: Optional[datetime] = Field(None, description="Начальная дата для генерации временных меток активностей (ISO формат)")
+    activity_end_date: Optional[datetime] = Field(None, description="Конечная дата для генерации временных меток активностей (ISO формат)")
 
 class SimulatorResponse(BaseModel):
     message: str
@@ -235,13 +244,38 @@ class ConsolidatedAnomaly(BaseModel):
     last_detected_at: datetime
     overall_severity: Optional[str] = None
     detector_count: int
-    triggered_detectors: List[AnomalyDetectorInfo] # Эта схема теперь содержит reason
+    triggered_detectors: List[AnomalyDetectorInfo]
 
-# --- Обновляем схему ответа для эндпоинта GET / --- 
-# Вместо List[Anomaly] или AnomalyResponse, будем использовать List[ConsolidatedAnomaly]
+    model_config = {
+        "from_attributes": True
+    }
 
-# --- Схемы для Деталей Аномалии (GET /{anomaly_id}) --- 
-# Их можно пока оставить без изменений, т.к. они запрашивают конкретную запись по ID
-class AnomalyDetailResponse(BaseModel):
-    anomaly: Anomaly 
-    related_entity: Optional[Union[UserActivity, Order]] = None
+# --- НОВАЯ СХЕМА для ответа с пагинацией --- 
+class ConsolidatedAnomalyResponse(BaseModel):
+    total_count: int
+    anomalies: List[ConsolidatedAnomaly]
+# -------------------------------------------
+
+# Schemas for Settings
+class SettingBase(BaseModel):
+    key: str
+    value: str
+
+class SettingCreate(SettingBase):
+    pass # Добавляем заглушку
+
+class Setting(SettingBase):
+    id: int
+
+# --- НОВАЯ СХЕМА: Упрощенный заказ для истории клиента --- 
+class SimpleOrderHistoryItem(BaseModel):
+    id: int
+    created_at: datetime
+    total_amount: float
+    item_count: int
+    is_current_anomaly: bool = False # Флаг, указывающий, является ли этот заказ текущей аномалией
+
+    model_config = {
+        "from_attributes": True
+    }
+# -------------------------------------------------------

@@ -20,6 +20,10 @@ from .common import SAVED_MODELS_DIR, NUMERICAL_FEATURES, CATEGORICAL_FEATURE, e
 # --- Импортируем AutoencoderDetector --- 
 from .autoencoder_detector import AutoencoderDetector
 
+# --- Импортируем SHAP --- 
+import shap
+# ------------------------
+
 # Путь для сохранения модели по умолчанию
 DEFAULT_MODEL_DIR = "backend/ml_service/saved_models"
 DEFAULT_MODEL_PATH = os.path.join(DEFAULT_MODEL_DIR, "isolation_forest_detector.joblib")
@@ -196,7 +200,23 @@ class IsolationForestDetector:
         anomalies = []
         anomaly_indices = np.where(predictions == -1)[0] # Индексы аномалий
 
-        for idx in anomaly_indices:
+        # --- ДОБАВЛЕНИЕ ВЫЧИСЛЕНИЯ SHAP VALUES --- 
+        shap_values_for_anomalies = None
+        if len(anomaly_indices) > 0:
+            try:
+                print(f"Calculating SHAP values for {len(anomaly_indices)} anomalies...")
+                # Используем TreeExplainer для IsolationForest
+                explainer = shap.TreeExplainer(self.model)
+                # Вычисляем SHAP values только для аномальных точек
+                # Важно: X должен быть DataFrame с именами признаков, которые ожидает explainer
+                shap_values_for_anomalies = explainer.shap_values(X.iloc[anomaly_indices])
+                print("SHAP values calculated.")
+            except Exception as e:
+                print(f"Error calculating SHAP values: {e}")
+                # Не прерываем детекцию, просто не будет SHAP-значений
+        # -------------------------------------------
+
+        for i, idx in enumerate(anomaly_indices):
             activity_id = df_engineered.iloc[idx]['id']
             current_score = scores[idx]
 
@@ -208,18 +228,28 @@ class IsolationForestDetector:
                  severity = "Medium"
             # -----------------------------
 
-            # --- УЛУЧШЕНО: Формирование Reason --- 
+            # --- УЛУЧШЕНО: Формирование Reason (НА РУССКОМ) --- 
             reason_str = (
-                f"Point easily isolated by the model (score: {current_score:.4f}), indicating it differs from the majority based on its features. "
-                f"Scores closer to -1 are more anomalous, closer to 1 are normal."
+                f"Точка легко изолирована моделью (оценка: {current_score:.4f}), что указывает на ее отличие от большинства на основе признаков. "
+                f"Оценки ближе к -1 более аномальны, ближе к 1 - нормальны."
             )
-            # ------------------------------------
+            # -------------------------------------------------
+            # --- ДОБАВЛЕНИЕ SHAP VALUES В DETAILS --- 
+            details_dict = {"anomaly_score": float(current_score)}
+            if shap_values_for_anomalies is not None and i < len(shap_values_for_anomalies):
+                # shap_values_for_anomalies это numpy array, i - индекс аномалии в этом array
+                anomaly_shap_values = shap_values_for_anomalies[i]
+                # Сопоставляем значения с именами признаков из self.feature_names
+                shap_dict = {name: round(float(val), 4) for name, val in zip(self.feature_names, anomaly_shap_values)}
+                details_dict['shap_values'] = shap_dict
+            # ----------------------------------------
 
             anomaly_info = {
                 "activity_id": activity_id,
                 "reason": reason_str, # <--- Используем улучшенный reason
-                "details": {"anomaly_score": float(current_score)},
-                "severity": severity # <--- Добавляем серьезность
+                "details": details_dict, # <--- Используем обновленные details с SHAP
+                "severity": severity, # <--- Добавляем серьезность
+                "anomaly_score": float(current_score)
             }
             anomalies.append(anomaly_info)
 
@@ -454,9 +484,8 @@ class StatisticalDetector:
                     # --- Перевод Reason на русский --- 
                     deviation_direction = "выше" if current_z > 0 else "ниже"
                     reason_str = (
-                        f"Значение признака '{feature_name}' ({current_value:.4f}) значительно отклоняется от среднего ({mean:.4f}). "
-                        f"Z-оценка = {current_z:.2f}, что {deviation_direction} порога {self.z_threshold}. "
-                        f"(Ст. откл.={std:.4f})"
+                        f"Значение признака '{feature_name}' ({current_value:.4f}) значительно ({current_z:.2f} ст.откл.) "
+                        f"отклоняется от среднего ({mean:.4f} \u00B1 {std:.4f}), что {deviation_direction} порога {self.z_threshold}."
                     )
                     # ---------------------------------
 
@@ -576,18 +605,21 @@ class DbscanDetector:
             activity_id = original_activity.get('id') # Получаем ID из оригинального (инженерного) DF
             if activity_id is None: continue # Пропускаем, если нет ID
 
-            # --- УЛУЧШЕНО: Формирование Reason --- 
+            # --- УЛУЧШЕНИЕ ОПИСАНИЯ ДЛЯ DBSCAN (НА РУССКОМ) --- 
             reason_str = (
-                f"Point classified as noise (cluster=-1) by DBSCAN. "
-                f"It doesn't belong to any dense cluster based on current settings (eps={self.eps}, min_samples={self.min_samples}) when analyzing its features."
+                f"Точка классифицирована как шум алгоритмом DBSCAN (eps={self.eps}, min_samples={self.min_samples}). "
+                f"Обычно это означает, что у нее менее {self.min_samples - 1} соседей в радиусе {self.eps}."
             )
-            # ------------------------------------
+            # ----------------------------------------------------
 
             anomaly_info = {
                 "activity_id": int(activity_id),
-                "reason": reason_str, # <--- Используем улучшенный reason
-                "details": {"cluster": -1},
-                "severity": "Medium" # DBSCAN шум считаем Medium
+                "reason": reason_str, # Используем новый reason
+                "details": {"eps": self.eps, "min_samples": self.min_samples}, # Детали пока только параметры
+                "severity": "Medium", # DBSCAN шум часто умеренной серьезности, можно настроить
+                # --- УБРАНО: Ошибочно добавленный anomaly_score для DBSCAN ---
+                # "anomaly_score": float(current_score) 
+                # ----------------------------------------------------------
             }
             anomalies.append(anomaly_info)
 

@@ -3,7 +3,7 @@ from sqlalchemy.orm import subqueryload
 from decimal import Decimal
 from typing import Optional, List, Dict, Tuple
 from datetime import datetime, timedelta
-from sqlalchemy import func, cast, Date
+from sqlalchemy import func, cast, Date, case
 
 from . import models, schemas
 
@@ -299,21 +299,33 @@ def create_anomaly(db: Session, anomaly: schemas.AnomalyCreate) -> models.Anomal
     db.refresh(db_anomaly) # Refresh to get default values like timestamp
     return db_anomaly
 
-def get_detected_anomalies(db: Session, skip: int = 0, limit: int = 100) -> List[models.Anomaly]:
+def get_detected_anomalies(db: Session, skip: int = 0, limit: int = 100) -> Tuple[int, List[models.Anomaly]]:
     """
-    Retrieves a list of detected anomalies with pagination.
-    Orders by detection timestamp descending (newest first).
+    Получает список обнаруженных аномалий (объекты Anomaly) с пагинацией.
+    Возвращает общее количество и список аномалий для страницы.
+    Сортирует по времени последнего обнаружения (desc).
+    Загружает связанные сработавшие детекторы.
     """
-    return db.query(models.Anomaly)             .order_by(models.Anomaly.detection_timestamp.desc())             .offset(skip)             .limit(limit)             .all()
+    # Сначала считаем общее количество записей (без пагинации)
+    total_count = db.query(func.count(models.Anomaly.id)).scalar()
+    
+    # Затем получаем записи для текущей страницы
+    anomalies = (
+        db.query(models.Anomaly)
+        .options(joinedload(models.Anomaly.triggered_detectors)) # Загружаем детали детекторов
+        .order_by(models.Anomaly.last_detected_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return total_count, anomalies
 
-# --- НОВАЯ ФУНКЦИЯ для получения одной аномалии ---
 def get_anomaly(db: Session, anomaly_id: int) -> Optional[models.Anomaly]:
     """
     Retrieves a single anomaly by its ID.
     """
     return db.query(models.Anomaly).filter(models.Anomaly.id == anomaly_id).first()
 
-# --- НОВАЯ ФУНКЦИЯ ---
 def delete_all_anomalies(db: Session) -> int:
     """
     Deletes all records from the anomalies table.
@@ -508,5 +520,109 @@ def get_feature_scatter_data(
 
     return scatter_data
 # =======================================
+
+# === НОВАЯ ФУНКЦИЯ ДЛЯ SCATTER PLOT ПО СЕССИЯМ ===
+def get_session_scatter_data(
+    db: Session,
+    feature_x: str = 'action_count',
+    feature_y: str = 'session_duration_seconds',
+    limit: int = 500
+) -> List[Dict]:
+    """
+    Возвращает агрегированные данные по сессиям для диаграммы рассеяния.
+    Поддерживает признаки 'action_count', 'session_duration_seconds'.
+    Сессия считается аномальной, если содержит хотя бы одну аномальную активность.
+    """
+    # Проверяем допустимые признаки для сессий
+    allowed_features = {
+        'action_count', 
+        'session_duration_seconds',
+        'unique_action_types',
+        'failed_login_count'
+    }
+    if feature_x not in allowed_features or feature_y not in allowed_features:
+        raise ValueError(f"Invalid feature name(s) for sessions. Allowed: {allowed_features}. Got: x='{feature_x}', y='{feature_y}'")
+
+    # Подзапрос для определения аномальных сессий
+    # Сессия аномальна, если хотя бы одна запись UserActivity в ней связана с Anomaly
+    subquery = db.query(models.UserActivity.session_id)\
+        .join(models.Anomaly, 
+              (models.UserActivity.id == models.Anomaly.entity_id) & 
+              (models.Anomaly.entity_type == 'activity'))\
+        .filter(models.UserActivity.session_id != None)\
+        .distinct()\
+        .subquery()
+
+    # Основной запрос для агрегации данных по сессиям
+    # Используем func.julianday для вычисления разницы дат в SQLite, затем конвертируем в секунды
+    session_data_query = db.query(
+        models.UserActivity.session_id,
+        func.count(models.UserActivity.id).label("action_count"),
+        (func.julianday(func.max(models.UserActivity.timestamp)) - 
+         func.julianday(func.min(models.UserActivity.timestamp)) * 86400.0 # Конвертируем дни в секунды
+        ).label("session_duration_seconds"),
+        # --- ДОБАВЛЯЕМ РАСЧЕТ НОВЫХ ПРИЗНАКОВ ---
+        func.count(func.distinct(models.UserActivity.action_type)).label("unique_action_types"),
+        # --- ИСПРАВЛЯЕМ ВЫЗОВ case() ---
+        func.sum(case((models.UserActivity.action_type == 'failed_login', 1), else_=0)).label("failed_login_count"),
+        # -------------------------------
+        subquery.c.session_id.isnot(None).label("is_anomaly") # Проверяем наличие session_id в подзапросе аномалий
+    )\
+    .filter(models.UserActivity.session_id != None)\
+    .group_by(models.UserActivity.session_id)\
+    .outerjoin(subquery, models.UserActivity.session_id == subquery.c.session_id)\
+    .order_by(func.max(models.UserActivity.timestamp).desc())\
+    .limit(limit)
+
+    results = session_data_query.all()
+
+    # Формируем результат для scatter plot
+    scatter_data = []
+    for row in results:
+        # Назначаем x и y в зависимости от запрошенных признаков
+        def get_value_from_row(feature_name):
+            if feature_name == 'action_count':
+                return row.action_count
+            elif feature_name == 'session_duration_seconds':
+                return row.session_duration_seconds
+            elif feature_name == 'unique_action_types':
+                return row.unique_action_types
+            elif feature_name == 'failed_login_count':
+                return row.failed_login_count
+            return 0.0 # Default
+            
+        val_x = get_value_from_row(feature_x)
+        val_y = get_value_from_row(feature_y)
+        
+        scatter_data.append({
+            "id": row.session_id, # ID здесь - это session_id
+            "x": float(val_x) if val_x is not None else 0.0,
+            "y": float(val_y) if val_y is not None else 0.0,
+            "is_anomaly": row.is_anomaly or False # Убедимся, что это boolean
+        })
+        
+    return scatter_data
+# =============================================
+
+# --- НОВАЯ ФУНКЦИЯ: Получение недавних заказов клиента --- 
+def get_recent_orders_by_customer_id(
+    db: Session, 
+    customer_id: int, 
+    limit: int = 5 # По умолчанию 5 последних заказов
+) -> List[models.Order]:
+    """
+    Получает список последних заказов для указанного клиента.
+    Сортирует по дате создания (сначала новые).
+    Загружает основные поля заказа (ID, дата, сумма) и, возможно, кол-во позиций.
+    """
+    return (
+        db.query(models.Order)
+        .options(subqueryload(models.Order.items)) # Загружаем items для подсчета item_count
+        .filter(models.Order.customer_id == customer_id)
+        .order_by(models.Order.created_at.desc()) # Сортируем по дате
+        .limit(limit)
+        .all()
+    )
+# -----------------------------------------------------
 
 # ... (rest of the file) ... 

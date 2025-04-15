@@ -90,31 +90,44 @@ class ScatterPoint(BaseModel):
 
 @router.get("/feature_scatter", response_model=List[ScatterPoint])
 def get_feature_scatter_plot(
-    entity_type: str = Query("order", description="Type of entity ('order')"),
-    feature_x: str = Query("total_amount", description="Feature for X-axis ('total_amount')"),
-    feature_y: str = Query("item_count", description="Feature for Y-axis ('item_count')"),
+    entity_type: str = Query("order", description="Type of entity ('order' or 'activity_session')"),
+    feature_x: str = Query("total_amount", description="Feature for X-axis (depends on entity_type)"),
+    feature_y: str = Query("item_count", description="Feature for Y-axis (depends on entity_type)"),
     limit: int = Query(500, description="Maximum number of points to return", ge=10, le=5000),
     db: Session = Depends(get_db)
 ):
     """
     Возвращает данные для диаграммы рассеяния (scatter plot).
-    Пока поддерживает только entity_type='order' с признаками 'total_amount' и 'item_count'.
+    Поддерживает entity_type='order' и 'activity_session'.
     """
     try:
-        data = crud.get_feature_scatter_data(
-            db=db,
-            entity_type=entity_type,
-            feature_x=feature_x,
-            feature_y=feature_y,
-            limit=limit
-        )
-        # Преобразуем item_count в float для соответствия схеме (хотя он int)
-        # Это не обязательно, Pydantic справится, но для ясности
-        return [ScatterPoint(id=p["id"], x=p["x"], y=float(p["y"]), is_anomaly=p["is_anomaly"]) for p in data]
-    except NotImplementedError as e:
+        if entity_type == 'order':
+            data = crud.get_feature_scatter_data(
+                db=db,
+                entity_type=entity_type, # Передаем для валидации внутри crud
+                feature_x=feature_x,
+                feature_y=feature_y,
+                limit=limit
+            )
+            # В crud уже приводит к float
+            # return [ScatterPoint(id=p["id"], x=p["x"], y=p["y"], is_anomaly=p["is_anomaly"]) for p in data]
+            return data # Возвращаем как есть, т.к. формат совпадает
+        elif entity_type == 'activity_session':
+            data = crud.get_session_scatter_data(
+                db=db,
+                feature_x=feature_x,
+                feature_y=feature_y,
+                limit=limit
+            )
+            # ID в этом случае - это session_id (строка), но схема ожидает int.
+            # Пока оставим так, на фронтенде ID не критичен для отображения.
+            # В идеале, схема ScatterPoint должна быть более гибкой или использовать Union.
+            # Преобразуем session_id в 0, чтобы соответствовать схеме (временное решение)
+            return [ScatterPoint(id=0, x=p["x"], y=p["y"], is_anomaly=p["is_anomaly"]) for p in data]
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported entity_type: {entity_type}")
+
+    except (NotImplementedError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"Error in /feature_scatter endpoint: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error fetching scatter plot data.")
 
 # ========================================== 

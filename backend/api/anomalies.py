@@ -12,6 +12,8 @@ from ..database import SessionLocal, get_db # Добавляем SessionLocal
 from .. import crud, models, schemas # Импортируем схемы отсюда
 # Импортируем get_detector и нужные классы детекторов
 from ..ml_service.detector import IsolationForestDetector, StatisticalDetector, DbscanDetector, get_detector, AutoencoderDetector
+# --- Импортируем ФАБРИКУ ДЛЯ ЗАКАЗОВ --- 
+from ..ml_service.order_detectors import get_order_detector
 # --- Импортируем утилиту --- 
 from ..utils import get_typed_settings
 
@@ -40,7 +42,10 @@ def train_models_background(db_session_factory, limit: int, z_threshold: float, 
         if entity_type == 'activity':
             algorithms_to_train = ['statistical_zscore', 'isolation_forest', 'autoencoder']
         elif entity_type == 'order':
-            algorithms_to_train = ['statistical_zscore']
+            # --- ИЗМЕНЕНО: Добавляем обучение для IF и AE для заказов --- 
+            algorithms_to_train = ['isolation_forest', 'autoencoder'] 
+            # Statistical Z-Score не требует отдельного шага 'train', поэтому его здесь нет
+            # -----------------------------------------------------------
         else:
             print(f"No specific algorithms defined for training entity_type='{entity_type}'")
 
@@ -61,12 +66,21 @@ def train_models_background(db_session_factory, limit: int, z_threshold: float, 
                     dbscan_min_samples=5
                 )
                 
-                detector_instance = get_detector(algo_name, mock_detect_params)
+                # --- ВЫБОР ФАБРИКИ ДЛЯ ОБУЧЕНИЯ --- 
+                if entity_type == 'order':
+                    detector_instance = get_order_detector(algo_name, mock_detect_params)
+                else: # По умолчанию используем детекторы для activity
+                    detector_instance = get_detector(algo_name, mock_detect_params)
+                # -----------------------------------
                 
                 # Вызываем метод train детектора
-                detector_instance.train(db=db, entity_type=entity_type, limit=limit)
-                
-                print(f"--- Completed training for {algo_name} (entity='{entity_type}') ---")
+                if detector_instance and hasattr(detector_instance, 'train'): # Проверяем наличие метода train
+                    detector_instance.train(db=db, entity_type=entity_type, limit=limit)
+                    print(f"--- Completed training for {algo_name} (entity='{entity_type}') ---")
+                elif not detector_instance:
+                     print(f"Skipping training for {algo_name} (entity='{entity_type}'): Detector not available or unsupported.")
+                else:
+                     print(f"Skipping training for {algo_name} (entity='{entity_type}'): Detector does not have a 'train' method (e.g., DBSCAN). Scaler might be trained during first detection.")
 
             except ImportError as ie:
                  print(f"Skipping training for {algo_name} due to missing dependency: {ie}")
@@ -118,7 +132,7 @@ def read_anomaly_details(
     return schemas.AnomalyDetailResponse(anomaly=db_anomaly, related_entity=related_entity_data)
 
 # --- Обновленный эндпоинт GET / для консолидированных аномалий --- 
-@router.get("/", response_model=List[schemas.ConsolidatedAnomaly], tags=["Anomaly Detection"])
+@router.get("/", response_model=schemas.ConsolidatedAnomalyResponse, tags=["Anomaly Detection"])
 def read_anomalies_consolidated(
     skip: int = 0, 
     limit: int = Query(100, ge=1, le=500, description="Max number of consolidated anomalies to return"), 
@@ -138,7 +152,9 @@ def read_anomalies_consolidated(
     ).all() 
     
     if not raw_anomalies:
-        return []
+        # --- ИСПРАВЛЕНО: Возвращаем правильную структуру, даже если пусто --- 
+        return schemas.ConsolidatedAnomalyResponse(total_count=0, anomalies=[])
+        # -----------------------------------------------------------------
     
     # 2. Группируем и создаем ConsolidatedAnomaly
     keyfunc = attrgetter('entity_type', 'entity_id')
@@ -182,11 +198,73 @@ def read_anomalies_consolidated(
     # 3. Сортируем результат по времени последнего обнаружения (сначала новые)
     consolidated_list.sort(key=attrgetter('last_detected_at'), reverse=True)
     
+    # --- ВЫЧИСЛЯЕМ total_count ПЕРЕД пагинацией --- 
+    total_count = len(consolidated_list)
+    # ----------------------------------------------
+    
     # 4. Применяем лимит и skip к консолидированному списку
-    final_list = consolidated_list[skip:skip+limit]
+    paginated_list = consolidated_list[skip:skip+limit]
 
-    print(f"Returning {len(final_list)} consolidated anomalies.")
-    return final_list
+    print(f"Returning {len(paginated_list)} of {total_count} consolidated anomalies.")
+    # --- ВОЗВРАЩАЕМ ОБЪЕКТ ConsolidatedAnomalyResponse --- 
+    return schemas.ConsolidatedAnomalyResponse(total_count=total_count, anomalies=paginated_list)
+    # -----------------------------------------------------
+
+# --- НОВЫЙ ЭНДПОИНТ: Получение контекста - недавние заказы клиента --- 
+@router.get(
+    "/{anomaly_id}/context/customer_history", 
+    response_model=List[schemas.SimpleOrderHistoryItem], 
+    tags=["Anomaly Context"]
+)
+def get_anomaly_context_customer_history(
+    anomaly_id: int, 
+    limit: int = Query(5, ge=1, le=20, description="Количество недавних заказов для показа"),
+    db: Session = Depends(get_db)
+):
+    """
+    Для аномалии заказа (entity_type='order') возвращает список недавних
+    заказов того же клиента для контекста.
+    """
+    # 1. Получаем аномалию
+    db_anomaly = crud.get_anomaly(db, anomaly_id=anomaly_id)
+    if db_anomaly is None:
+        raise HTTPException(status_code=404, detail="Anomaly not found")
+
+    # 2. Проверяем тип сущности
+    if db_anomaly.entity_type != 'order':
+        raise HTTPException(status_code=400, detail="Context endpoint only applicable to 'order' anomalies")
+
+    # 3. Получаем связанный заказ (нужен для customer_id)
+    db_order = crud.get_order(db, order_id=db_anomaly.entity_id)
+    if db_order is None:
+        # Это странная ситуация - аномалия есть, а заказа нет
+        raise HTTPException(status_code=404, detail=f"Related order (ID: {db_anomaly.entity_id}) not found for anomaly")
+    if db_order.customer is None:
+        # Еще одна странная ситуация
+        raise HTTPException(status_code=404, detail=f"Customer not found for order (ID: {db_order.id})")
+        
+    customer_id = db_order.customer_id
+    anomalous_order_id = db_order.id # ID заказа, который вызвал аномалию
+
+    # 4. Получаем недавние заказы клиента через CRUD
+    recent_orders = crud.get_recent_orders_by_customer_id(db, customer_id=customer_id, limit=limit)
+
+    # 5. Преобразуем в схему ответа и отмечаем аномальный заказ
+    history_items = []
+    for order in recent_orders:
+        # Считаем количество позиций (items должны быть загружены через subqueryload в CRUD)
+        item_count = len(order.items) if order.items else 0 
+        history_item = schemas.SimpleOrderHistoryItem(
+            id=order.id,
+            created_at=order.created_at,
+            total_amount=order.total_amount,
+            item_count=item_count,
+            is_current_anomaly=(order.id == anomalous_order_id) # Отмечаем текущий
+        )
+        history_items.append(history_item)
+        
+    return history_items
+# --------------------------------------------------------------------
 
 # ВОЗВРАЩАЕМ schemas.TrainingParams
 @router.post("/train", status_code=status.HTTP_202_ACCEPTED)
@@ -264,9 +342,19 @@ def run_detection_and_save(
                 'autoencoder_threshold': current_settings.get('autoencoder_threshold', 0.5)
             })
 
-            detector_instance = get_detector(algo_name, detector_params)
+            # --- ВЫБОР ФАБРИКИ ДЛЯ ДЕТЕКЦИИ --- 
+            if params.entity_type == 'order':
+                detector_instance = get_order_detector(algo_name, detector_params)
+            else:
+                 detector_instance = get_detector(algo_name, detector_params)
+            # -----------------------------------
+            
+            if not detector_instance:
+                 print(f"Skipping unsupported/unavailable detector: {algo_name} for entity {params.entity_type}")
+                 continue # Пропускаем этот алгоритм
+
             detected_anomalies = detector_instance.detect(db=db, entity_type=params.entity_type, limit=params.limit)
-            print(f"--- {algo_name} detected {len(detected_anomalies)} potential anomalies.")
+            print(f"--- {algo_name} detected {len(detected_anomalies)} potential anomalies for {params.entity_type}.")
             
             anomalies_saved_for_algo = 0
             for anomaly_data in detected_anomalies:
