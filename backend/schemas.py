@@ -138,6 +138,7 @@ class UserActivityCreate(UserActivityBase):
 class UserActivity(UserActivityBase):
     id: int
     timestamp: datetime
+    customer_id: Optional[int] = None
     customer: Optional[Customer] = None # Связь с клиентом (если есть)
     model_config = ConfigDict(from_attributes=True)
 
@@ -279,3 +280,17 @@ class SimpleOrderHistoryItem(BaseModel):
         "from_attributes": True
     }
 # -------------------------------------------------------
+
+# --- НОВАЯ СХЕМА: Упрощенная активность для истории сессии --- 
+class SimpleActivityHistoryItem(BaseModel):
+    id: int
+    timestamp: datetime
+    action_type: str
+    details: Optional[dict] = None # Отобразим основные детали
+    session_id: Optional[str] = None # <--- Добавляем ID сессии
+    is_current_anomaly: bool = False # Флаг, указывающий, является ли эта активность текущей аномалией
+
+    model_config = {
+        "from_attributes": True
+    }
+# ---------------------------------------------------------

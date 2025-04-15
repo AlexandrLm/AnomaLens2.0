@@ -625,4 +625,24 @@ def get_recent_orders_by_customer_id(
     )
 # -----------------------------------------------------
 
+# --- НОВАЯ ФУНКЦИЯ: Получение активностей по session_id --- 
+def get_activities_by_session_id(
+    db: Session, 
+    session_id: str
+) -> List[models.UserActivity]:
+    """
+    Получает все активности пользователя для указанного session_id.
+    Сортирует по времени (timestamp asc) для отображения истории сессии.
+    """
+    if not session_id:
+        return [] # Возвращаем пустой список, если session_id не предоставлен
+    
+    return (
+        db.query(models.UserActivity)
+        .filter(models.UserActivity.session_id == session_id)
+        .order_by(models.UserActivity.timestamp.asc()) # Сортируем по возрастанию времени
+        .all()
+    )
+# -------------------------------------------------------
+
 # ... (rest of the file) ... 

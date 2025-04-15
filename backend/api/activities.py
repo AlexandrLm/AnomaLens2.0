@@ -58,4 +58,47 @@ def read_single_user_activity(activity_id: int, db: Session = Depends(get_db)):
     db_activity = crud.get_user_activity(db, activity_id=activity_id)
     if db_activity is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User activity not found")
-    return db_activity 
+    return db_activity
+
+# --- НОВЫЙ ЭНДПОИНТ: Получение контекста - история сессии --- 
+@router.get(
+    "/{activity_id}/context/session_history",
+    response_model=List[schemas.SimpleActivityHistoryItem],
+    tags=["Activities Context"] # Добавляем отдельный тег для контекста
+)
+def get_activity_context_session_history(
+    activity_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Для указанной активности возвращает список всех действий пользователя
+    в рамках той же сессии для контекста.
+    """
+    # 1. Получаем исходную активность (нужна для session_id)
+    db_activity = crud.get_user_activity(db, activity_id=activity_id)
+    if db_activity is None:
+        raise HTTPException(status_code=404, detail=f"Activity (ID: {activity_id}) not found")
+    if db_activity.session_id is None:
+        raise HTTPException(status_code=400, detail=f"Activity (ID: {activity_id}) does not have a session ID")
+
+    session_id = db_activity.session_id
+    current_activity_id = db_activity.id # ID активности, для которой запрашиваем контекст
+
+    # 2. Получаем все активности сессии через CRUD
+    session_activities = crud.get_activities_by_session_id(db, session_id=session_id)
+
+    # 3. Преобразуем в схему ответа и отмечаем текущую аномальную активность
+    history_items = []
+    for activity in session_activities:
+        history_item = schemas.SimpleActivityHistoryItem(
+            id=activity.id,
+            timestamp=activity.timestamp,
+            action_type=activity.action_type,
+            details=activity.details,
+            session_id=activity.session_id,
+            is_current_anomaly=(activity.id == current_activity_id) # Отмечаем текущую
+        )
+        history_items.append(history_item)
+        
+    return history_items
+# ------------------------------------------------------------ 

@@ -114,42 +114,60 @@ const getSeverityChipColor = (severity) => {
 const AnomalyDetailsDialogContent = ({ anomaly }) => {
     const theme = useTheme();
 
-    // --- НОВОЕ: Состояние для истории заказов клиента --- 
+    // --- Состояние для истории заказов --- 
     const [customerOrderHistory, setCustomerOrderHistory] = useState([]);
-    const [loadingHistory, setLoadingHistory] = useState(false);
-    const [errorHistory, setErrorHistory] = useState('');
-    // ----------------------------------------------------
+    const [loadingOrderHistory, setLoadingOrderHistory] = useState(false);
+    const [errorOrderHistory, setErrorOrderHistory] = useState('');
+    
+    // --- НОВОЕ: Состояние для истории сессии --- 
+    const [sessionActivityHistory, setSessionActivityHistory] = useState([]);
+    const [loadingSessionHistory, setLoadingSessionHistory] = useState(false);
+    const [errorSessionHistory, setErrorSessionHistory] = useState('');
+    // --------------------------------------------
 
-    // --- НОВОЕ: Загрузка истории при открытии для аномалии заказа --- 
+    // --- Обновленный useEffect для загрузки контекста ---
     useEffect(() => {
-        if (anomaly && anomaly.entity_type === 'order') {
-            const fetchHistory = async () => {
-                setLoadingHistory(true);
-                setErrorHistory('');
-                setCustomerOrderHistory([]); // Сбрасываем перед загрузкой
-                try {
-                    // Используем новый эндпоинт и ID заказа
-                    const response = await axios.get(`/api/order_data/orders/${anomaly.entity_id}/context/customer_history`, {
-                         params: { limit: 7 } // Загружаем, например, 7 последних
-                    });
-                    setCustomerOrderHistory(response.data); // Ожидаем List[SimpleOrderHistoryItem]
-                } catch (err) {
-                    console.error("Error fetching customer order history:", err);
-                    setErrorHistory(err.response?.data?.detail || 'Не удалось загрузить историю заказов клиента.');
-                }
-                 finally {
-                    setLoadingHistory(false);
-                 }
-            };
-            fetchHistory();
-        } else {
-             // Сбрасываем историю, если это не аномалия заказа или аномалия не выбрана
-             setCustomerOrderHistory([]);
-             setLoadingHistory(false);
-             setErrorHistory('');
+        // Сбрасываем все состояния перед загрузкой
+        setCustomerOrderHistory([]); setLoadingOrderHistory(false); setErrorOrderHistory('');
+        setSessionActivityHistory([]); setLoadingSessionHistory(false); setErrorSessionHistory('');
+
+        if (anomaly) {
+            if (anomaly.entity_type === 'order') {
+                // Загрузка истории заказов (как было)
+                const fetchOrderHistory = async () => {
+                    setLoadingOrderHistory(true);
+                    try {
+                        const response = await axios.get(`/api/order_data/orders/${anomaly.entity_id}/context/customer_history`, {
+                             params: { limit: 7 }
+                        });
+                        setCustomerOrderHistory(response.data);
+                    } catch (err) {
+                        console.error("Error fetching customer order history:", err);
+                        setErrorOrderHistory(err.response?.data?.detail || 'Не удалось загрузить историю заказов клиента.');
+                    }
+                     finally { setLoadingOrderHistory(false); }
+                };
+                fetchOrderHistory();
+
+            } else if (anomaly.entity_type === 'activity') {
+                 // --- НОВОЕ: Загрузка истории сессии --- 
+                 const fetchSessionHistory = async () => {
+                    setLoadingSessionHistory(true);
+                    try {
+                        const response = await axios.get(`/api/activities/${anomaly.entity_id}/context/session_history`);
+                        setSessionActivityHistory(response.data); // Ожидаем List[SimpleActivityHistoryItem]
+                    } catch (err) {
+                        console.error("Error fetching session activity history:", err);
+                        setErrorSessionHistory(err.response?.data?.detail || 'Не удалось загрузить историю сессии.');
+                    }
+                    finally { setLoadingSessionHistory(false); }
+                 };
+                 fetchSessionHistory();
+                 // -------------------------------------
+            }
         }
-    }, [anomaly]); // Перезагружаем при смене аномалии
-    // -------------------------------------------------------------
+    }, [anomaly]); 
+    // ---------------------------------------------------------
 
     if (!anomaly) return null;
 
@@ -207,9 +225,9 @@ const AnomalyDetailsDialogContent = ({ anomaly }) => {
             {anomaly.entity_type === 'order' && (
                 <Box sx={{ mt: 3 }}>
                     <Typography variant="subtitle1" gutterBottom>Недавние заказы этого клиента</Typography>
-                    {loadingHistory && <CircularProgress size={20} sx={{ display: 'block', mx: 'auto'}}/>}
-                    {errorHistory && <Alert severity="warning" size="small" sx={{mt: 1}}>{errorHistory}</Alert>}
-                    {!loadingHistory && !errorHistory && customerOrderHistory.length > 0 && (
+                    {loadingOrderHistory && <CircularProgress size={20} sx={{ display: 'block', mx: 'auto'}}/>}
+                    {errorOrderHistory && <Alert severity="warning" size="small" sx={{mt: 1}}>{errorOrderHistory}</Alert>}
+                    {!loadingOrderHistory && !errorOrderHistory && customerOrderHistory.length > 0 && (
                          <TableContainer component={Paper} elevation={0} variant="outlined" sx={{ mt: 1 }}>
                             <Table size="small" aria-label="customer order history">
                                 <TableHead>
@@ -245,12 +263,66 @@ const AnomalyDetailsDialogContent = ({ anomaly }) => {
                             </Table>
                         </TableContainer>
                     )}
-                    {!loadingHistory && !errorHistory && customerOrderHistory.length === 0 && anomaly.entity_type === 'order' && (
+                    {!loadingOrderHistory && !errorOrderHistory && customerOrderHistory.length === 0 && anomaly.entity_type === 'order' && (
                         <Typography variant="body2" color="text.secondary" sx={{mt: 1}}>Нет данных о других заказах этого клиента.</Typography>
                     )}
                 </Box>
             )}
             {/* ------------------------------------------------- */}
+
+            {/* --- НОВОЕ: Секция Истории Сессии --- */}
+            {anomaly.entity_type === 'activity' && (
+                <Box sx={{ mt: 3 }}>
+                    <Typography variant="subtitle1" gutterBottom>Действия в рамках этой сессии</Typography>
+                    {loadingSessionHistory && <CircularProgress size={20} sx={{ display: 'block', mx: 'auto'}}/>}
+                    {errorSessionHistory && <Alert severity="warning" size="small" sx={{mt: 1}}>{errorSessionHistory}</Alert>}
+                    {!loadingSessionHistory && !errorSessionHistory && sessionActivityHistory.length > 0 && (
+                         <TableContainer component={Paper} elevation={0} variant="outlined" sx={{ mt: 1, maxHeight: 300, overflowY: 'auto' }}>
+                            <Table size="small" aria-label="session activity history" stickyHeader>
+                                <TableHead>
+                                     <TableRow>
+                                        <TableCell sx={{width: '20%'}}>Время</TableCell>
+                                        <TableCell sx={{width: '25%'}}>Тип Действия</TableCell>
+                                        <TableCell>Детали</TableCell>
+                                     </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                    {sessionActivityHistory.map((activity) => (
+                                        <TableRow 
+                                            key={activity.id}
+                                            sx={{
+                                                backgroundColor: activity.is_current_anomaly 
+                                                    ? alpha(theme.palette.warning.light, 0.3) 
+                                                    : 'inherit',
+                                                '&:last-child td, &:last-child th': { border: 0 }
+                                            }}
+                                        >
+                                            <TableCell>
+                                                 {format(parseISO(activity.timestamp), 'HH:mm:ss.SSS', { locale: ru })}
+                                                 {activity.is_current_anomaly && <Chip label="Текущая" size="small" color="warning" variant="outlined" sx={{ml: 1, height: 18}}/>}
+                                            </TableCell>
+                                            <TableCell>{activity.action_type}</TableCell>
+                                            <TableCell sx={{fontSize: '0.75rem'}}>
+                                                 {activity.details ? JSON.stringify(activity.details) : '-'} {/* Просто выводим JSON деталей */} 
+                                            </TableCell>
+                                        </TableRow>
+                                    ))}
+                                </TableBody>
+                            </Table>
+                        </TableContainer>
+                    )}
+                    {!loadingSessionHistory && !errorSessionHistory && sessionActivityHistory.length === 0 && anomaly.entity_type === 'activity' && (
+                        <Typography variant="body2" color="text.secondary" sx={{mt: 1}}>Нет данных о других действиях в этой сессии.</Typography>
+                    )}
+                     {/* Добавляем session_id, если он есть */} 
+                     {anomaly.entity_type === 'activity' && sessionActivityHistory.length > 0 && (
+                         <Typography variant="caption" display="block" color="text.secondary" sx={{mt: 0.5}}>
+                             Session ID: {sessionActivityHistory[0]?.session_id || 'N/A'} {/* Предполагаем, что session_id одинаковый для всех */} 
+                         </Typography>
+                     )}
+                </Box>
+            )}
+            {/* ------------------------------------------ */}
 
             {/* --- Детали по каждому детектору (используем аккордеон) --- */}
             <Typography variant="subtitle1" gutterBottom sx={{ mt: 3 }}>Сработавшие Детекторы</Typography>
@@ -271,12 +343,15 @@ const AnomalyDetailsDialogContent = ({ anomaly }) => {
                          let detailsContent = null;
                          if (detectorInfo.details !== null && detectorInfo.details !== undefined) {
                             if (typeof detectorInfo.details === 'object') {
-                                // --- Проверка на Autoencoder и feature_errors --- 
-                                const isAutoencoder = detectorInfo.detector_name === 'autoencoder';
-                                const featureErrors = isAutoencoder ? detectorInfo.details.feature_errors : null;
-                                const otherDetails = { ...detectorInfo.details };
-                                if (featureErrors) {
-                                    delete otherDetails.feature_errors; // Удаляем ошибки из "основных" деталей
+                                // --- ДОБАВЛЯЕМ ЛОГИКУ ИЗВЛЕЧЕНИЯ feature_errors ---
+                                let featureErrors = null;
+                                let otherDetails = { ...detectorInfo.details }; // Копируем детали
+
+                                if (detectorInfo.detector_name === 'autoencoder' && typeof detectorInfo.details === 'object' && detectorInfo.details !== null && detectorInfo.details.feature_errors) {
+                                    featureErrors = { ...detectorInfo.details.feature_errors };
+                                    if (featureErrors) {
+                                        delete otherDetails.feature_errors; // Удаляем ошибки из "основных" деталей
+                                    }
                                 }
                                 // ----------------------------------------------
 
@@ -298,34 +373,82 @@ const AnomalyDetailsDialogContent = ({ anomaly }) => {
                                     </TableContainer>
                                          )}
 
-                                        {/* Отображаем ошибки по признакам для Autoencoder */} 
+                                        {/* --- ЗАМЕНЯЕМ ТАБЛИЦУ MAE НА Bar Chart --- */}
                                         {featureErrors && (
                                              <>
                                                 <Typography variant="subtitle2" gutterBottom sx={{ mt: 1.5, color: 'text.secondary' }}>
                                                      Ошибки реконструкции по признакам (MAE):
                                                 </Typography>
-                                                <TableContainer component={Paper} elevation={0} variant="outlined" sx={{ mt: 1, maxHeight: 200, overflowY: 'auto' }}>
-                                                    <Table size="small" stickyHeader>
-                                                        {/* Сортируем признаки по убыванию ошибки */}
-                                                         {Object.entries(featureErrors)
-                                                            .sort(([, errorA], [, errorB]) => errorB - errorA)
-                                                            .map(([feature, error]) => (
-                                                                <TableRow key={feature}>
-                                                                    <TableCell sx={{fontWeight: 'medium', width: '60%', py: 0.5 }}>{feature}:</TableCell>
-                                                                    <TableCell sx={{ py: 0.5, color: error > 0 ? 'error.main' : 'inherit' }}>{error.toFixed(4)}</TableCell>
-                                                                </TableRow>
-                                                            ))}
-                                                    </Table> 
-                                                </TableContainer>
+                                                {/* Подготовка данных и рендеринг графика MAE */}
+                                                {(() => {
+                                                    const maeEntries = Object.entries(featureErrors)
+                                                        .sort(([, errorA], [, errorB]) => errorB - errorA) // Сортируем по убыванию MAE
+                                                        .slice(0, 15); // Показываем топ-15 признаков
+
+                                                    const chartLabels = maeEntries.map(([feature]) => feature);
+                                                    const chartDataValues = maeEntries.map(([, error]) => error);
+
+                                                    // Используем один цвет (например, красный), т.к. MAE всегда >= 0
+                                                    const backgroundColors = chartDataValues.map(() => 'rgba(255, 99, 132, 0.6)');
+                                                    const borderColors = chartDataValues.map(() => 'rgba(255, 99, 132, 1)');
+
+                                                    const chartData = {
+                                                        labels: chartLabels,
+                                                        datasets: [
+                                                            {
+                                                                label: 'MAE',
+                                                                data: chartDataValues,
+                                                                backgroundColor: backgroundColors,
+                                                                borderColor: borderColors,
+                                                                borderWidth: 1,
+                                                            },
+                                                        ],
+                                                    };
+
+                                                    const chartOptions = {
+                                                        indexAxis: 'y', // Горизонтальный бар
+                                                        responsive: true,
+                                                        maintainAspectRatio: false,
+                                                        plugins: {
+                                                            legend: { display: false },
+                                                            tooltip: {
+                                                                callbacks: {
+                                                                    label: function(context) {
+                                                                        return ` ${context.dataset.label}: ${context.raw.toFixed(4)}`;
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        scales: {
+                                                            x: {
+                                                                title: {
+                                                                    display: true,
+                                                                    text: 'MAE по признаку',
+                                                                    font: { size: 10 }
+                                                                },
+                                                                ticks: { font: { size: 9 } }
+                                                            },
+                                                            y: {
+                                                                 ticks: { font: { size: 9 } }
+                                                            }
+                                                        }
+                                                    };
+
+                                                    return (
+                                                        <Box sx={{ height: '300px', mt: 1 }}> {/* Задаем высоту контейнера графика */}
+                                                            <Bar options={chartOptions} data={chartData} />
+                                                        </Box>
+                                                    );
+                                                })()}
                                             </>
                                         )}
-                                        {/* --- ЗАМЕНЯЕМ ТАБЛИЦУ SHAP НА Bar Chart --- */}
+                                        {/* --- График SHAP для Isolation Forest (остается без изменений) --- */}
                                         {detectorInfo.detector_name === 'isolation_forest' && detectorInfo.details?.shap_values && (
                                              <>
                                                 <Typography variant="subtitle2" gutterBottom sx={{ mt: 1.5, color: 'text.secondary' }}>
                                                      Вклад признаков (SHAP values):
                                                 </Typography>
-                                                {/* Подготовка данных для графика */} 
+                                                {/* Подготовка данных для графика SHAP */}
                                                 {(() => {
                                                     const shapEntries = Object.entries(detectorInfo.details.shap_values)
                                                         .sort(([, valA], [, valB]) => Math.abs(valB) - Math.abs(valA))
@@ -616,14 +739,14 @@ function DashboardPage() {
                 {
                     label: 'Активность пользователей',
                     data: dataPoints,
-                    borderColor: theme.palette.primary.main,
-                    backgroundColor: theme.palette.primary.light + '80', // с прозрачностью
+                    borderColor: 'rgb(53, 162, 235)', // Синий цвет линии
+                    backgroundColor: 'rgba(53, 162, 235, 0.5)', // Синий цвет заливки с 50% прозрачности
+                    fill: true, // Включаем заливку под линией
                     tension: 0.1,
-                    fill: true,
                 },
             ],
         };
-    }, [activityTimelineData, theme.palette.primary]);
+    }, [activityTimelineData]);
 
     const anomalySummaryChartData = useMemo(() => {
         if (!anomalySummaryData) return null;
@@ -1010,12 +1133,15 @@ function DashboardPage() {
                         <Grid container spacing={2} sx={{ mt: 1 }}>
                             {Object.entries(summary).map(([key, value]) => (
                                 <Grid xs={12} sm={6} md={4} lg={2.4} key={key}> {/* Adjust lg for 5 items */}
-                                    <Card>
-                                        <CardContent>
-                                            <Typography variant="h6" component="div" sx={{ textTransform: 'capitalize', fontSize: '0.9rem' }}>
+                                    {/* Стиль как у карточки Заказа */}
+                                    <Card elevation={1}> {/* Оставляем небольшую тень */}
+                                        <CardContent sx={{ p: 1.5 }}> {/* Возвращаем чуть больше padding */}
+                                            {/* Название сущности (метка) */}
+                                            <Typography variant="body2" component="div" sx={{ color: 'text.secondary', textTransform: 'capitalize', mb: 0.5 }}> {/* Меньше шрифт, отступ снизу */}
                                                 {key.replace(/_/g, ' ')}
                                             </Typography>
-                                            <Typography variant="h5" color="text.secondary">
+                                            {/* Значение (количество) */}
+                                            <Typography variant="h5" component="div" sx={{ fontWeight: 'medium' }}> {/* Крупнее и жирнее */}
                                                 {typeof value === 'number' ? value.toLocaleString() : value}
                                             </Typography>
                                         </CardContent>
